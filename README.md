@@ -20,7 +20,7 @@
 This work presents **_AeroDuo: Aerial Duo for UAV-based Vision and Language Navigation_**. We introduce a dual-altitude collaborative framework, a dual-altitude VLN dataset, and a multimodal system for autonomous UAV flight.
 
 # 📰News
-2025-12-03: Paper, project page, code, testset data, envs and models are all released.
+2025-12-05: Paper, project page, code, testset data, envs and models are all released.
 
 
 # 🛠️ Requirements and Installation
