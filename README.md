@@ -1,0 +1,144 @@
+<div align="center">
+<h1>AeroDuo: Aerial Duo for UAV-based Vision and Language Navigation</h1>
+
+<image src="assets/teaser.png" width="100%">
+<a href="https://arxiv.org/abs/2508.15232"><img src='https://img.shields.io/badge/arXiv-AeroDuo-red' alt='Paper PDF'></a>
+<a href='https://rey-nard.github.io/AeroDuo_project/'><img src='https://img.shields.io/badge/Project_Page-AeroDuo-green' alt='Project Page'></a>
+<a href='https://huggingface.co/datasets/wangxiangyu0814/TravelUAV_env'><img src='https://img.shields.io/badge/Env-TRAVEL-blue'></a>
+<a href='https://huggingface.co/datasets/salome1023/HaL-13k_testset'><img src='https://img.shields.io/badge/Dataset-
+HaL13k_testset-blue'></a>
+</div>
+
+# Contents
+
+- [Introduction](#introduction)
+- [Dependencies](#dependencies)
+- [Preparation](#prepare-the-data)
+- [Usage](#usage)
+- [Citation](#paper)
+
+# Introduction
+This work presents **_AeroDuo: Aerial Duo for UAV-based Vision and Language Navigation_**. We introduce a dual-altitude collaborative framework, a dual-altitude VLN dataset, and a multimodal system for autonomous UAV flight.
+
+# 📰News
+2025-12-03: Paper, project page, code, testset data, envs and models are all released.
+
+
+# 🛠️ Requirements and Installation
+
+## Python Environment
+
+### Create `aeroduo` environment
+
+```bash
+conda create -n aeroduo python=3.9 -y
+conda activate aeroduo
+pip install torch==2.4.0 torchvision==0.19.0 --index-url https://download.pytorch.org/whl/cu121
+pip install torchrl==0.4.0
+```
+
+### Install other dependencies listed in the requirements file
+
+```bash
+pip install -r requirement.txt
+```
+
+Additionally, to ensure compatibility with the AirSim Python API, apply the fix mentioned in the [AirSim issue](https://github.com/microsoft/AirSim/issues/3333#issuecomment-827894198)
+
+## Data
+Download the dataset from [here](https://huggingface.co/datasets/salome1023/HaL-13k_testset), and arrange the files into the following hierarchy:s:
+```
+├───data
+|   ├── HaL-13k
+|   │   ├── Carla_Town05
+|   │   ├── ModularPark
+|   │   ├── NewYorkCity
+|   │   ├── ...
+```
+
+Currently, only the test set is provided, but we will release the complete dataset in the future.
+
+## Model
+
+### GroundingDINO
+
+Download the GroundingDINO model from the link [groundingdino_swint_ogc.pth](https://huggingface.co/ShilongLiu/GroundingDINO/resolve/main/groundingdino_swint_ogc.pth), and place the file in the directory `utils/GroundingDINO/`.
+
+### PilotLLM
+
+First download the pretrained weights from [Qwen2-VL-2B-Instruct](https://huggingface.co/Qwen/Qwen2-VL-2B-Instruct/tree/main), and then download the task-specific LoRA weights [AeroDuo-PilotLLM](https://huggingface.co/salome1023/AeroDuo-PilotLLM) used in the paper.
+
+Please organize your directory in the following structure:
+```
+├───pilot_llm
+|   ├── weights
+|   │   ├── Qwen2-VL-2B-Instruct
+|   │   ├── AeroDuo-PilotLLM
+```
+
+## Simulator environments
+
+We adopt the simulation environments from the [OpenUAV](https://github.com/prince687028/TravelUAV) platform. You can download the simulator environments for various maps from [here](https://huggingface.co/datasets/wangxiangyu0814/TravelUAV_env), specifically utilizing `carla_town_envs` and `closeloop_envs`.
+
+The file directory of environments is as follows:
+```
+├───envs
+|   ├── carla_town_envs
+|   │   ├── Town01
+|   │   ├── Town02
+|   │   ├── Town03
+|   │   ├── ...
+|   ├── closeloop_envs
+|   │   ├── Engine
+|   │   ├── ModularEuropean
+|   │   ├── ModularEuropean.sh
+|   │   ├── ModularPark
+|   │   ├── ModularPark.sh
+|   │   ├── ...
+```
+# ✅ Usage
+
+1. setup simulator env server
+
+Before running the simulations, ensure the AirSim environment server is properly configured.
+
+> Update the env executable paths`env_exec_path_dict` relative to `root_path` in `AirVLNSimulatorServerTool.py`.
+
+```bash
+python airsim_plugin/AirVLNSimulatorServerTool.py --port 50000 
+```
+
+
+2. run close-loop simulation
+
+Once the simulator server is running, you can execute the dagger or evaluation script.
+
+```bash
+# Eval
+bash shell_scripts/eval.sh
+```
+
+💡 **Performance Tip**: 
+The user could consider setting --use_a_star in `eval.sh` to False (default is True). The current internal A* algorithm implementation is unoptimized and may significantly result in slow execution speeds.
+
+# 📆 TODO <a name="todos"></a>
+- [x] Release the code and the testset of HaL-13k.
+- [ ] Release the train scripts and the complete HaL-13k.
+- [ ] Optimize the A* algorithm.
+
+# Paper
+
+If you find this project useful, please consider citing:
+```bibtex
+    @inproceedings{wu2025aeroduo,
+      title     = {AeroDuo: Aerial Duo for UAV-based Vision and Language Navigation},
+      author    = {Wu, Ruipu and Zhang, Yige and Chen, Jinyu and Huang, Linjiang and Zhang, Shifeng and Zhou, Xu and Wang, Liang and Liu, Si},
+      booktitle = {Proceedings of the 33rd ACM International Conference on Multimedia},
+      pages     = {2576--2585},
+      year      = {2025}
+    }
+```
+
+# Acknowledgement
+
+This repository is partly based on [TravelUAV](https://github.com/prince687028/TravelUAV) and [Qwen2-VL](https://huggingface.co/Qwen/Qwen2-VL-2B-Instruct) repositories.

@@ -1,0 +1,134 @@
+# -----------------------------
+# General
+# -----------------------------
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+*.egg
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# -----------------------------
+# Virtual environments
+# -----------------------------
+venv/
+env/
+.venv/
+ENV/
+venv.bak/
+
+# -----------------------------
+# Logs and databases
+# -----------------------------
+*.log
+*.csv
+*.sqlite3
+*.db
+logs/
+log/
+
+# -----------------------------
+# OS files
+# -----------------------------
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# -----------------------------
+# Editor / IDE
+# -----------------------------
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+*.swp
+
+# -----------------------------
+# PyTorch / ML artifacts
+# -----------------------------
+checkpoints/
+ckpts/
+*.ckpt
+*.pt
+*.pth
+weights/
+pretrained_weights/
+
+# Tensorboard
+runs/
+events.out.tfevents.*
+
+# -----------------------------
+# Results
+# -----------------------------
+results/
+output/
+eval_results/
+
+# Large media / binary assets
+*.h5
+*.npy
+*.npz
+*.tar
+*.zip
+*.gz
+
+# -----------------------------
+# Jupyter Notebook
+# -----------------------------
+.ipynb_checkpoints
+*.ipynb
+
+# -----------------------------
+# Python testing
+# -----------------------------
+.pytest_cache/
+.tox/
+coverage.xml
+htmlcov/
+.coverage
+
+# -----------------------------
+# Environment variables / secrets
+# -----------------------------
+.env
+.env.*
+local_settings.py
+secret_*.json
+
+# -----------------------------
+# AirSim / simulator specific
+# -----------------------------
+.airsim/
+airsim_*_client.log
+
+# -----------------------------
+# Misc: generated files, temporary
+# -----------------------------
+*.tmp
+*.bak
+*~
+
+# -----------------------------
+# Keep these (examples) - uncomment and adjust if needed
+# -----------------------------
+#!/bin/sh
+# Ignore a specific dataset subfolder instead of entire data/
+HaL-13k
+
+envs/
+
+# GroudingDino
+GroundingDINO
+bert-base-uncased

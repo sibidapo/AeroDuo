@@ -1,0 +1,13 @@
+python -u full_eval.py \
+    --name test-eval \
+    --use_a_star True \
+    --batchSize 1 \
+    --EVAL_NUM -1 \
+    --gpu_id 0 \
+    --device 0 \
+    --maxWaypoints 50 \
+    --simulator_tool_port 50000 \
+    --run_type eval \
+    --llm_checkpoint_path ./pilot_llm/weights/AeroDuo-PilotLLM \
+    --eval_save_path ./output \
+    --dataset_path ./data/test_unseen_new.json
