@@ -5,8 +5,7 @@
 <a href="https://arxiv.org/abs/2508.15232"><img src='https://img.shields.io/badge/arXiv-AeroDuo-red' alt='Paper PDF'></a>
 <a href='https://rey-nard.github.io/AeroDuo_project/'><img src='https://img.shields.io/badge/Project_Page-AeroDuo-green' alt='Project Page'></a>
 <a href='https://huggingface.co/datasets/wangxiangyu0814/TravelUAV_env'><img src='https://img.shields.io/badge/Env-TRAVEL-blue'></a>
-<a href='https://huggingface.co/datasets/salome1023/HaL-13k_testset'><img src='https://img.shields.io/badge/Dataset-
-HaL13k_testset-blue'></a>
+<a href='https://huggingface.co/datasets/salome1023/HaL-13k_testset'><img src='https://img.shields.io/badge/Dataset-HaL13k_testset-blue'></a>
 </div>
 
 # Contents
