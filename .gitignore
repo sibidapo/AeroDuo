@@ -58,9 +58,7 @@ desktop.ini
 # PyTorch / ML artifacts
 # -----------------------------
 checkpoints/
-ckpts/
 *.ckpt
-*.pt
 *.pth
 weights/
 pretrained_weights/
