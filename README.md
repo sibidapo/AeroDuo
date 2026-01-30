@@ -11,19 +11,23 @@
 # Contents
 
 - [Introduction](#introduction)
-- [Dependencies](#dependencies)
-- [Preparation](#prepare-the-data)
+- [News](#news)
+- [Requirements and Installation](#requirements)
+  - [Python Environment](#python-environment)
+  - [Data](#data)
+  - [Model](#model)
+  - [Simulator environments](#simulator-environments)
 - [Usage](#usage)
-- [Citation](#paper)
+
 
 # Introduction
 This work presents **_AeroDuo: Aerial Duo for UAV-based Vision and Language Navigation_**. We introduce a dual-altitude collaborative framework, a dual-altitude VLN dataset, and a multimodal system for autonomous UAV flight.
 
-# 📰News
+# 📰News <a id="news"></a>
 2025-12-05: Paper, project page, code, testset data, envs and models are all released.
 
 
-# 🛠️ Requirements and Installation
+# 🛠️ Requirements and Installation<a id="requirements"></a>
 
 ## Python Environment
 
@@ -95,7 +99,7 @@ The file directory of environments is as follows:
 |   │   ├── ModularPark.sh
 |   │   ├── ...
 ```
-# ✅ Usage
+# ✅ Usage <a id="usage"></a>
 
 1. setup simulator env server
 
