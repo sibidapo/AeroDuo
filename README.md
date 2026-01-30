@@ -5,6 +5,7 @@
 <a href="https://arxiv.org/abs/2508.15232"><img src='https://img.shields.io/badge/arXiv-AeroDuo-red' alt='Paper PDF'></a>
 <a href='https://rey-nard.github.io/AeroDuo_project/'><img src='https://img.shields.io/badge/Project_Page-AeroDuo-green' alt='Project Page'></a>
 <a href='https://huggingface.co/datasets/wangxiangyu0814/TravelUAV_env'><img src='https://img.shields.io/badge/Env-TRAVEL-blue'></a>
+<a href='https://modelscope.cn/datasets/Reynard/HaL-13k/files'><img src='https://img.shields.io/badge/Dataset-HaL13k-blue'></a>
 <a href='https://huggingface.co/datasets/salome1023/HaL-13k_testset'><img src='https://img.shields.io/badge/Dataset-HaL13k_testset-blue'></a>
 </div>
 
@@ -49,7 +50,7 @@ pip install -r requirement.txt
 Additionally, to ensure compatibility with the AirSim Python API, apply the fix mentioned in the [AirSim issue](https://github.com/microsoft/AirSim/issues/3333#issuecomment-827894198)
 
 ## Data
-Download the dataset from [here](https://huggingface.co/datasets/salome1023/HaL-13k_testset), and arrange the files into the following hierarchy:s:
+Download the dataset from [here](https://huggingface.co/datasets/salome1023/HaL-13k_testset), and arrange the files into the following hierarchy:
 ```
 ├───data
 |   ├── HaL-13k
