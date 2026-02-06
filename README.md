@@ -18,14 +18,17 @@
   - [Data](#data)
   - [Model](#model)
   - [Simulator environments](#simulator-environments)
-- [Usage](#usage)
+- [Train](#train)
+- [Evaluation](#eval)
 
 
 # Introduction
 This work presents **_AeroDuo: Aerial Duo for UAV-based Vision and Language Navigation_**. We introduce a dual-altitude collaborative framework, a dual-altitude VLN dataset, and a multimodal system for autonomous UAV flight.
 
 # 📰News <a id="news"></a>
-2025-12-05: Paper, project page, code, testset data, envs and models are all released.
+**2026-02-06:**  The train scripts and the complete HaL-13k are released.
+
+**2025-12-05:**  Paper, project page, code, testset data, envs and models are all released.
 
 
 # 🛠️ Requirements and Installation<a id="requirements"></a>
@@ -50,7 +53,7 @@ pip install -r requirement.txt
 Additionally, to ensure compatibility with the AirSim Python API, apply the fix mentioned in the [AirSim issue](https://github.com/microsoft/AirSim/issues/3333#issuecomment-827894198)
 
 ## Data
-Download the dataset from [here](https://huggingface.co/datasets/salome1023/HaL-13k_testset), and arrange the files into the following hierarchy:
+Download the dataset from [here](https://modelscope.cn/datasets/Reynard/HaL-13k/files), and arrange the files into the following hierarchy:
 ```
 ├───data
 |   ├── HaL-13k
@@ -72,12 +75,15 @@ Download the GroundingDINO model from the link [groundingdino_swint_ogc.pth](htt
 
 First download the pretrained weights from [Qwen2-VL-2B-Instruct](https://huggingface.co/Qwen/Qwen2-VL-2B-Instruct/tree/main), and then download the task-specific LoRA weights [AeroDuo-PilotLLM](https://huggingface.co/salome1023/AeroDuo-PilotLLM) used in the paper.
 
+To finetune the PilotLLM on HaL-13k，you also need to download the pretrained weights on auxiliary task [pretrained_Qwen2-VL-2B-Instruct](https://huggingface.co/Rey-nard/pretrained_Qwen2-VL-2B-Instruct/tree/main).
+
 Please organize your directory in the following structure:
 ```
 ├───pilot_llm
 |   ├── weights
 |   │   ├── Qwen2-VL-2B-Instruct
 |   │   ├── AeroDuo-PilotLLM
+|   |   ├── pretrained_Qwen2-VL-2B-Instruct
 ```
 
 ## Simulator environments
@@ -100,9 +106,22 @@ The file directory of environments is as follows:
 |   │   ├── ModularPark.sh
 |   │   ├── ...
 ```
-# ✅ Usage <a id="usage"></a>
+# 🚀 Train <a id="train"></a>
+We provide a shell script to finetune the PilotLLM on the HaL-13k dataset.
 
-1. setup simulator env server
+## 1. Configuration
+Before starting, ensure the distributed training settings in `pilot_llm/default_deepspeed.yaml` match your situation. You can adjust parameters such as the `num_processes` to decide the number of gpu to use:
+
+## 2. Start Training
+Run the following command to start the training process:
+
+```bash
+bash shell_scripts/train.sh
+```
+
+# ✅ Evaluation <a id="eval"></a>
+
+## 1. setup simulator env server
 
 Before running the simulations, ensure the AirSim environment server is properly configured.
 
@@ -112,8 +131,7 @@ Before running the simulations, ensure the AirSim environment server is properly
 python airsim_plugin/AirVLNSimulatorServerTool.py --port 50000 
 ```
 
-
-2. run close-loop simulation
+## 2. run close-loop simulation
 
 Once the simulator server is running, you can execute the dagger or evaluation script.
 
@@ -122,12 +140,14 @@ Once the simulator server is running, you can execute the dagger or evaluation s
 bash shell_scripts/eval.sh
 ```
 
+To evaluate your own finetune result, replace the `llm_checkpoint_path` in the `eval.sh` with your own checkpoint path.
+
 💡 **Performance Tip**: 
 The user could consider setting --use_a_star in `eval.sh` to False (default is True). The current internal A* algorithm implementation is unoptimized and may significantly result in slow execution speeds.
 
 # 📆 TODO <a name="todos"></a>
 - [x] Release the code and the testset of HaL-13k.
-- [ ] Release the train scripts and the complete HaL-13k.
+- [x] Release the train scripts and the complete HaL-13k.
 - [ ] Optimize the A* algorithm.
 
 # Paper

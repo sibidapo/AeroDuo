@@ -1,0 +1,27 @@
+compute_environment: LOCAL_MACHINE
+deepspeed_config:
+  gradient_accumulation_steps: 1
+  gradient_clipping: 1.0
+  offload_optimizer_device: none
+  offload_param_device: none
+  zero3_init_flag: false
+  zero3_save_16bit_model: true
+  zero_stage: 2
+  fp16:
+    enabled: false
+    loss_scale: 0
+    initial_scale_power: 24
+    loss_scale_window: 1200
+    min_loss_scale: 1
+    hysteresis: 2
+    consecutive_hysteresis: false
+  bf16:
+    enabled: true
+distributed_type: DEEPSPEED
+fsdp_config: {}
+machine_rank: 0
+main_training_function: main
+mixed_precision: bf16
+num_machines: 1
+num_processes: 4
+use_cpu: false

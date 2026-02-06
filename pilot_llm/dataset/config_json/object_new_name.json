@@ -1,0 +1,378 @@
+[
+    {
+        "object_name": "SM_African_elephant",
+        "new_name": "Brown elephant"
+    },
+    {
+        "object_name": "SM_camel",
+        "new_name": "yellow camel"
+    },
+    {
+        "object_name": "SM_Cape_Buffalo",
+        "new_name": "black cow"
+    },
+    {
+        "object_name": "SM_domestic_pig",
+        "new_name": "pink pig"
+    },
+    {
+        "object_name": "SM_Domestic_sheep",
+        "new_name": "white sheep"
+    },
+    {
+        "object_name": "SM_horse_skeleton",
+        "new_name": "Brown horse"
+    },
+    {
+        "object_name": "SM_Indian_elephant",
+        "new_name": "Brown elephant"
+    },
+    {
+        "object_name": "SM_leopard",
+        "new_name": "yellow leopard"
+    },
+    {
+        "object_name": "SM_Longhorn_cattle",
+        "new_name": "yellow cow"
+    },
+    {
+        "object_name": "SM_Longhorn_cattle_V2",
+        "new_name": "white cow"
+    },
+    {
+        "object_name": "SM_mud_pig",
+        "new_name": "Brown pig"
+    },
+    {
+        "object_name": "SM_rhino",
+        "new_name": "gray rhino"
+    },
+    {
+        "object_name": "SM_Scotland_cattle",
+        "new_name": "yellow cattle"
+    },
+    {
+        "object_name": "SM_tiger",
+        "new_name": "yellow tiger"
+    },
+    {
+        "object_name": "SM_zebra",
+        "new_name": "black and white zebra"
+    },
+    {
+        "object_name": "SM_Couple02",
+        "new_name": "man"
+    },
+    {
+        "object_name": "SM_Couple04",
+        "new_name": "man"
+    },
+    {
+        "object_name": "SM_Couple13",
+        "new_name": "man"
+    },
+    {
+        "object_name": "SM_Dog01",
+        "new_name": "black dog"
+    },
+    {
+        "object_name": "SM_Dog02",
+        "new_name": "Brown dog"
+    },
+    {
+        "object_name": "SM_Dog03",
+        "new_name": "white dog"
+    },
+    {
+        "object_name": "SM_Man01",
+        "new_name": "man"
+    },
+    {
+        "object_name": "SM_Man02",
+        "new_name": "man"
+    },
+    {
+        "object_name": "SM_Man10",
+        "new_name": "man"
+    },
+    {
+        "object_name": "SM_Man17",
+        "new_name": "man"
+    },
+    {
+        "object_name": "SM_Man32",
+        "new_name": "man"
+    },
+    {
+        "object_name": "SM_Man33",
+        "new_name": "man"
+    },
+    {
+        "object_name": "SM_Man36",
+        "new_name": "man"
+    },
+    {
+        "object_name": "SM_Man39",
+        "new_name": "man"
+    },
+    {
+        "object_name": "SM_Man42",
+        "new_name": "man"
+    },
+    {
+        "object_name": "SM_Man54",
+        "new_name": "man"
+    },
+    {
+        "object_name": "SM_Woman04",
+        "new_name": "woman"
+    },
+    {
+        "object_name": "SM_Woman27",
+        "new_name": "woman"
+    },
+    {
+        "object_name": "SM_Woman44",
+        "new_name": "woman"
+    },
+    {
+        "object_name": "SM_Woman47",
+        "new_name": "woman"
+    },
+    {
+        "object_name": "SM_Woman51",
+        "new_name": "woman"
+    },
+    {
+        "object_name": "SM_Woman52",
+        "new_name": "woman"
+    },
+    {
+        "object_name": "SM_Woman53",
+        "new_name": "woman"
+    },
+    {
+        "object_name": "SM_AudiA2",
+        "new_name": " blue car"
+    },
+    {
+        "object_name": "SM_EtronParked",
+        "new_name": "purple car"
+    },
+    {
+        "object_name": "SM_AudiTT",
+        "new_name": "red car"
+    },
+    {
+        "object_name": "SM_VolkswagenBeetle",
+        "new_name": "Brown car"
+    },
+    {
+        "object_name": "SM_BMWGrandTourer",
+        "new_name": "blue car"
+    },
+    {
+        "object_name": "SM_BMWIsetta",
+        "new_name": "blue car"
+    },
+    {
+        "object_name": "SM_ChevroletImpala",
+        "new_name": "red car"
+    },
+    {
+        "object_name": "SM_Citroen_C3",
+        "new_name": "green car"
+    },
+    {
+        "object_name": "SM_Cybertruck",
+        "new_name": "black car"
+    },
+    {
+        "object_name": "SM_Charger_parked",
+        "new_name": "red car"
+    },
+    {
+        "object_name": "SM_SeatLeon",
+        "new_name": "yellow car"
+    },
+    {
+        "object_name": "SM_LincolnMkz2017_prop",
+        "new_name": "black car"
+    },
+    {
+        "object_name": "SM_Lincoln2020Parked",
+        "new_name": "black car"
+    },
+    {
+        "object_name": "SM_MiniCooperS",
+        "new_name": "white car"
+    },
+    {
+        "object_name": "SM_Mustang_prop",
+        "new_name": "red car"
+    },
+    {
+        "object_name": "SM_NissanMicra",
+        "new_name": "blue car"
+    },
+    {
+        "object_name": "SM_NissanPatrolST",
+        "new_name": "yellow car"
+    },
+    {
+        "object_name": "SM_ChargerParked",
+        "new_name": "red car"
+    },
+    {
+        "object_name": "SM_FordCrown_parked",
+        "new_name": "yellow car"
+    },
+    {
+        "object_name": "SM_LincolnParked",
+        "new_name": "black car"
+    },
+    {
+        "object_name": "SM_Mini2021_parked",
+        "new_name": "red car"
+    },
+    {
+        "object_name": "SM_NissanPatrol2021_parked",
+        "new_name": "red car"
+    },
+    {
+        "object_name": "SM_TeslaM3_parked",
+        "new_name": "black car"
+    },
+    {
+        "object_name": "SM_VolkswagenT2_2021_Parked",
+        "new_name": "blue and white car"
+    },
+    {
+        "object_name": "SM_Tazzari",
+        "new_name": "white car"
+    },
+    {
+        "object_name": "SM_Table_Round",
+        "new_name": "white table"
+    },
+    {
+        "object_name": "SM_StreetBarrier",
+        "new_name": "Orange StreetBarrier"
+    },
+    {
+        "object_name": "SM_TrafficCones_01",
+        "new_name": "TrafficCones"
+    },
+    {
+        "object_name": "SM_WarningAccident",
+        "new_name": "Warning sign"
+    },
+    {
+        "object_name": "SM_WarningConstruction",
+        "new_name": "WarningConstruction"
+    },
+    {
+        "object_name": "SM_hayBale",
+        "new_name": "haybale"
+    },
+    {
+        "object_name": "SM_PlasticChair",
+        "new_name": "white chair"
+    },
+    {
+        "object_name": "SM_PlasticTable",
+        "new_name": "umbrella table"
+    },
+    {
+        "object_name": "SM_Table",
+        "new_name": "white table"
+    },
+    {
+        "object_name": "SM_ShoppingBag",
+        "new_name": "green shopping bag"
+    },
+    {
+        "object_name": "SM_ShoppingTrolley",
+        "new_name": "red shopping trolly"
+    },
+    {
+        "object_name": "SM_TravelCase",
+        "new_name": "yellow travel case"
+    },
+    {
+        "object_name": "SM_Bin",
+        "new_name": "green bin"
+    },
+    {
+        "object_name": "SM_TrasdhBag",
+        "new_name": "black trash bag"
+    },
+    {
+        "object_name": "SM_TrashCan01",
+        "new_name": "white trash can"
+    },
+    {
+        "object_name": "SM_TrashCan03",
+        "new_name": "white trash can"
+    },
+    {
+        "object_name": "SM_Harley",
+        "new_name": "purple motorcycle"
+    },
+    {
+        "object_name": "SM_Kawasaki",
+        "new_name": "green motorcycle"
+    },
+    {
+        "object_name": "SM_Vespa",
+        "new_name": "red motorcycle"
+    },
+    {
+        "object_name": "SM_Yamaha",
+        "new_name": "blue motorcycle"
+    },
+    {
+        "object_name": "SM_FireHdrant",
+        "new_name": "red FireHdrant"
+    },
+    {
+        "object_name": "SM_MailBox",
+        "new_name": "blue mailbox"
+    },
+    {
+        "object_name": "SM_AmbulanceParked",
+        "new_name": "ambulance"
+    },
+    {
+        "object_name": "SM_CarlaCola",
+        "new_name": "red truck"
+    },
+    {
+        "object_name": "SM_FiretruckParked",
+        "new_name": "red firetruck"
+    },
+    {
+        "object_name": "SM_Truck",
+        "new_name": "white truck"
+    },
+    {
+        "object_name": "SM_Tent_01",
+        "new_name": "green tent"
+    },
+    {
+        "object_name": "SM_Tent_02",
+        "new_name": "white tent"
+    },
+    {
+        "object_name": "SM_Tent_03",
+        "new_name": "yellow tent"
+    },
+    {
+        "object_name": "SM_Tent_04",
+        "new_name": "green tent"
+    },
+    {
+        "object_name": "SM_RoadBike",
+        "new_name": "road bike"
+    }
+]

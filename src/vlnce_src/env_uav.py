@@ -18,7 +18,6 @@ import tqdm
 from src.common.param import args
 from utils.logger import logger
 sys.path.append(str(Path(str(os.getcwd())).resolve()))
-sys.path.append('/home/airport/airdrone/LLaMA-UAV/')
 from airsim_plugin.AirVLNSimulatorClientTool import AirVLNSimulatorClientTool
 from airsim import MultirotorClient
 from airsim_plugin.AirVLNSimulatorClientTool import State, Imu
