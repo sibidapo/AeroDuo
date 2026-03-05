@@ -1,0 +1,117 @@
+{
+    "bike": [
+        "AASM_RoadBike",
+        "AASM_Yamaha",
+        "AASM_Vespa",
+        "AASM_Kawasaki",
+        "AASM_Harley"
+    ],
+    "car": [
+        "AASM_AudiA2",
+        "AASM_EtronParked",
+        "AASM_AudiTT",
+        "AASM_VolkswagenBeetle",
+        "AASM_BMWGrandTourer",
+        "AASM_BMWIsetta",
+        "AASM_ChevroletImpala",
+        "AASM_Citroen_C3",
+        "AASM_Cybertruck",
+        "AASM_Charger_parked",
+        "AASM_SeatLeon",
+        "AASM_LincolnMkz2017_prop",
+        "AASM_Lincoln2020Parked",
+        "AASM_MiniCooperS",
+        "AASM_Mini2021_parked",
+        "AASM_Mustang_prop",
+        "AASM_NissanMicra",
+        "AASM_NissanPatrolST",
+        "AASM_ChargerParked",
+        "AASM_FordCrown_parked",
+        "AASM_LincolnParked",
+        "AASM_NissanPatrol2021_parked",
+        "AASM_TeslaM3_parked",
+        "AASM_VolkswagenT2_2021_Parked",
+        "AASM_Tazzari",
+        "AASM_AmbulanceParked",
+        "AASM_CarlaCola",
+        "AASM_FiretruckParked",
+        "AASM_Truck"
+    ],
+    "trash": [
+        "AASM_Bin",
+        "AASM_TrashCan01",
+        "AASM_TrashCan03",
+        "AASM_TrasdhBag"
+    ],
+    "box": [
+        "AASM_ShoppingBag",
+        "AASM_ShoppingTrolley",
+        "AASM_TravelCase"
+    ],
+    "chair": [
+        "AASM_PlasticTable",
+        "AASM_PlasticChair",
+        "AASM_Table",
+        "AASM_Table_Round"
+    ],
+    "wild": [
+        "AASM_hayBale",
+        "SM_Tent_01",
+        "SM_Tent_02",
+        "SM_Tent_03",
+        "SM_Tent_04"
+    ],
+    "traffic_control_devices": [
+        "AASM_WarningConstruction",
+        "AASM_WarningAccident",
+        "AASM_TrafficCones_01",
+        "AASM_StreetBarrier"
+    ],
+    "sideroad": [
+        "AASM_FireHdrant",
+        "AASM_MailBox"
+    ],
+    "human": [
+        "SM_Couple02",
+        "SM_Couple04",
+        "SM_Couple13",
+        "SM_Man01",
+        "SM_Man02",
+        "SM_Man10",
+        "SM_Man17",
+        "SM_Man32",
+        "SM_Man33",
+        "SM_Man36",
+        "SM_Man39",
+        "SM_Man42",
+        "SM_Man54",
+        "SM_Woman04",
+        "SM_Woman27",
+        "SM_Woman44",
+        "SM_Woman51",
+        "SM_Woman52",
+        "SM_Woman53"
+    ],
+    "dog": [
+        "SM_Dog01",
+        "SM_Dog02",
+        "SM_Dog03"
+    ],
+    "animal": [
+        "SM_African_elephant",
+        "SM_camel",
+        "SM_Cape_Buffalo",
+        "SM_domestic_pig",
+        "SM_Domestic_sheep",
+        "SM_horse_skeleton",
+        "SM_Indian_elephant",
+        "SM_leopard",
+        "SM_Longhorn_cattle",
+        "SM_Longhorn_cattle_V2",
+        "SM_mud_pig",
+        "SM_rhino",
+        "SM_Scotland_cattle",
+        "SM_tiger",
+        "SM_zebra"
+    ]
+}
