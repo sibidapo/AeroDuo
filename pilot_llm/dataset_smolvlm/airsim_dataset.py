@@ -234,10 +234,10 @@ class AirSimDataset(torch.utils.data.Dataset):
             return self.__getitem__((idx + 1) % self.__len__())
 
 def find_assistant_content_sublist_indexes(l):
-    # (Pdb++) processor.tokenizer.encode("<|im_start|>assistant\n")
-    # [151644, 77091, 198]
-    # (Pdb++) processor.tokenizer.encode("<|im_end|>\n")
-    # [151645, 198]
+    # (Pdb++) processor.tokenizer.encode("\nAssistant:")
+    # [198, 9519, 9531, 42]
+    # (Pdb++) processor.tokenizer.encode("<end_of_utterance>\n")
+    # [49279, 198]
 
     start_indexes = []
     end_indexes = []
@@ -245,11 +245,11 @@ def find_assistant_content_sublist_indexes(l):
     # Iterate through the list to find starting points
     for i in range(len(l) - 1):
         # Check if the current and next elements form the start sequence
-        if l[i] == 151644 and l[i+1] == 77091 and l[i+2] == 198:
-            start_indexes.append(i+3)
-            # Now look for the first 151645 and 198 after the start
-            for j in range(i+3, len(l)-1):
-                if l[j] == 151645 and l[j+1] == 198:
+        if l[i] == 198 and l[i+1] == 9519 and l[i+2] == 9531 and l[i+3] == 42:
+            start_indexes.append(i+4)
+            # Now look for [49279, 198] (<end_of_utterance>\n) after the start
+            for j in range(i+4, len(l)-1):
+                if l[j] == 49279 and l[j+1] == 198:
                     end_indexes.append(j+2)
                     break  # Move to the next start after finding the end
 

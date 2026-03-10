@@ -1,0 +1,29 @@
+Collecting albumentations
+  Downloading albumentations-2.0.8-py3-none-any.whl.metadata (43 kB)
+Requirement already satisfied: numpy>=1.24.4 in /storage/project/r-cj124-0/sibidapo3/anxcnda/aeroduo/lib/python3.11/site-packages (from albumentations) (2.2.6)
+Requirement already satisfied: scipy>=1.10.0 in /storage/project/r-cj124-0/sibidapo3/anxcnda/aeroduo/lib/python3.11/site-packages (from albumentations) (1.16.3)
+Requirement already satisfied: PyYAML in /storage/project/r-cj124-0/sibidapo3/anxcnda/aeroduo/lib/python3.11/site-packages (from albumentations) (6.0.2)
+Requirement already satisfied: pydantic>=2.9.2 in /storage/project/r-cj124-0/sibidapo3/anxcnda/aeroduo/lib/python3.11/site-packages (from albumentations) (2.12.5)
+Collecting albucore==0.0.24 (from albumentations)
+  Downloading albucore-0.0.24-py3-none-any.whl.metadata (5.3 kB)
+Collecting opencv-python-headless>=4.9.0.80 (from albumentations)
+  Downloading opencv_python_headless-4.13.0.92-cp37-abi3-manylinux_2_28_x86_64.whl.metadata (19 kB)
+Collecting stringzilla>=3.10.4 (from albucore==0.0.24->albumentations)
+  Downloading stringzilla-4.6.0-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.manylinux_2_28_x86_64.whl.metadata (121 kB)
+Collecting simsimd>=5.9.2 (from albucore==0.0.24->albumentations)
+  Downloading simsimd-6.5.16-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl.metadata (70 kB)
+Requirement already satisfied: annotated-types>=0.6.0 in /storage/project/r-cj124-0/sibidapo3/anxcnda/aeroduo/lib/python3.11/site-packages (from pydantic>=2.9.2->albumentations) (0.7.0)
+Requirement already satisfied: pydantic-core==2.41.5 in /storage/project/r-cj124-0/sibidapo3/anxcnda/aeroduo/lib/python3.11/site-packages (from pydantic>=2.9.2->albumentations) (2.41.5)
+Requirement already satisfied: typing-extensions>=4.14.1 in /storage/project/r-cj124-0/sibidapo3/anxcnda/aeroduo/lib/python3.11/site-packages (from pydantic>=2.9.2->albumentations) (4.15.0)
+Requirement already satisfied: typing-inspection>=0.4.2 in /storage/project/r-cj124-0/sibidapo3/anxcnda/aeroduo/lib/python3.11/site-packages (from pydantic>=2.9.2->albumentations) (0.4.2)
+Downloading albumentations-2.0.8-py3-none-any.whl (369 kB)
+Downloading albucore-0.0.24-py3-none-any.whl (15 kB)
+Downloading opencv_python_headless-4.13.0.92-cp37-abi3-manylinux_2_28_x86_64.whl (60.4 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 60.4/60.4 MB 123.3 MB/s  0:00:00
+Downloading simsimd-6.5.16-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl (583 kB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 583.8/583.8 kB 27.1 MB/s  0:00:00
+Downloading stringzilla-4.6.0-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.manylinux_2_28_x86_64.whl (2.1 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 2.1/2.1 MB 79.3 MB/s  0:00:00
+Installing collected packages: simsimd, stringzilla, opencv-python-headless, albucore, albumentations
+
+Successfully installed albucore-0.0.24 albumentations-2.0.8 opencv-python-headless-4.13.0.92 simsimd-6.5.16 stringzilla-4.6.0
