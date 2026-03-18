@@ -26,7 +26,7 @@ class CallPilot:
         weights = torch.load(os.path.join(checkpoint_path, "pytorch_model/mp_rank_00_model_states.pt"))
         model.load_state_dict(weights['module'], strict=False)
 
-        self.model = model.to(device)
+        self.model = model.to(self.device)
         self.model.eval()
 
         self.ortho_processor = Orthophoto()

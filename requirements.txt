@@ -34,3 +34,4 @@ transformers==4.53.0
 wandb==0.23.0
 yacs==0.1.8
 yapf==0.43.0
+# initial pytorch version is 2.4.0+cu121 and flash_attn is 2.8.3

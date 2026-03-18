@@ -32,11 +32,11 @@ def main():
             # Using str.split(..., 1) ensures we only split at the first occurrence
             if 'image_path' in item:
                 parts = item['image_path'].split(matched_town, 1)
-                item['image_path'] = f"../data/Hal-13k/{matched_town}{parts[1]}"
+                item['image_path'] = f"data/Hal-13k/{matched_town}{parts[1]}"
                 
             if 'traj_folder_path' in item:
                 parts = item['traj_folder_path'].split(matched_town, 1)
-                item['traj_folder_path'] = f"../data/Hal-13k/{matched_town}{parts[1]}"
+                item['traj_folder_path'] = f"data/Hal-13k/{matched_town}{parts[1]}"
                 
             new_data.append(item)
             
