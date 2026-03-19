@@ -222,6 +222,7 @@ def main():
         tb_writer = SummaryWriter(log_dir=log_dir)
         wandb.init(
             project="pilot_llm_smolvlm",
+            entity=args.wandb_entity,
             name=f"run_{current_time}",
             config=vars(args)
         )

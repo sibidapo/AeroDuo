@@ -81,7 +81,7 @@ class PilotLLMSmolVLM(SmolVLMForConditionalGeneration):
         )
         self.mask_head = MaskHead(hidden_size)
         self.depth_head = MaskHead(hidden_size)
-        self.mask_query = nn.Parameter(torch.zeros([self.num_image_token, hidden_size]))
+        self.mask_query = nn.Parameter(torch.randn([self.num_image_token, hidden_size]) * 0.02)
         self.ce_loss = nn.CrossEntropyLoss()
         self.bce_loss = nn.BCEWithLogitsLoss()
 
