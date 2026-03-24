@@ -12,7 +12,7 @@ def main():
     with open(input_path, 'r') as f:
         data = json.load(f)
         
-    allowed_towns = ['Carla_Town02', 'Carla_Town03', 'Carla_Town05', 'Carla_Town10HD']
+    allowed_towns = ['Carla_Town01', 'Carla_Town04', 'Carla_Town06','Carla_Town07', 'Carla_Town10HD']
     
     new_data = []
     
@@ -37,8 +37,28 @@ def main():
             if 'traj_folder_path' in item:
                 parts = item['traj_folder_path'].split(matched_town, 1)
                 item['traj_folder_path'] = f"data/Hal-13k/{matched_town}{parts[1]}"
-                
-            new_data.append(item)
+
+            # Add sanity check to avoid empty JSON issues
+            traj_dir = item.get('traj_folder_path', '')
+            # Need to get path relative to current WD for existence checks
+            # Since traj_dir starts with "data/...", it should be correct if run from project root
+            desc_file = os.path.join(traj_dir, "object_description_with_help.json")
+            waypoints_file = os.path.join(traj_dir, "gt_waypoints.json")
+            
+            # Check if critical files exist and are not empty
+            is_valid = True
+            for file_path in [desc_file, waypoints_file]:
+                if not os.path.exists(file_path):
+                    # print(f"Warning: Missing metadata {file_path}")
+                    is_valid = False
+                    break
+                if os.path.getsize(file_path) == 0:
+                    # print(f"Warning: Empty metadata {file_path}")
+                    is_valid = False
+                    break
+            
+            if is_valid:
+                new_data.append(item)
             
     print(f"Filtered down to {len(new_data)} items from {len(data)} items originally.")
     

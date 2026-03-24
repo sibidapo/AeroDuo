@@ -1,6 +1,15 @@
 import argparse
 import math
 import os
+import tempfile
+
+# Set TMPDIR to a writable location to avoid /tmp cleanup issues during long training runs
+# This must be done before importing torch.distributed modules
+if 'TMPDIR' not in os.environ:
+    tmpdir = os.path.join(os.getcwd(), '.tmp')
+    os.makedirs(tmpdir, exist_ok=True)
+    os.environ['TMPDIR'] = tmpdir
+
 os.environ['TOKENIZERS_PARALLELISM'] = 'true'
 from functools import partial
 import time
@@ -224,7 +233,8 @@ def main():
             project="pilot_llm_smolvlm",
             entity=args.wandb_entity,
             name=f"run_{current_time}",
-            config=vars(args)
+            config=vars(args),
+            dir=args.output_dir
         )
 
     weight_dtype = torch.float32
@@ -453,6 +463,27 @@ def main():
                             removing_checkpoint = os.path.join(
                                 args.output_dir, removing_checkpoint)
                             shutil.rmtree(removing_checkpoint)
+
+                if accelerator.is_main_process:
+                    import torchvision
+                    # Get the ground truth and predicted mask for the first sample in the batch
+                    gt_mask = kwargs.get("masks_list", [None])[0]
+                    if gt_mask is not None:
+                        # Extract the first mask from the sequence
+                        gt_to_save = gt_mask[:1].float().cpu() # Shape: (1, H, W)
+                        # preds[0] corresponds to the first sample. Apply sigmoid to get probabilities. 
+                        # We also slice to match gt_to_save shape just in case padding differs
+                        pred_to_save = torch.sigmoid(preds[0][:1, :gt_to_save.shape[1], :gt_to_save.shape[2]]).float().cpu()
+
+                        # Save as PNG locally
+                        torchvision.utils.save_image(pred_to_save, os.path.join(save_path, "pred_mask.png"))
+                        torchvision.utils.save_image(gt_to_save, os.path.join(save_path, "gt_mask.png"))
+                        
+                        # Log to wandb
+                        wandb.log({
+                            "checkpoint_eval/pred_mask": wandb.Image(pred_to_save),
+                            "checkpoint_eval/gt_mask": wandb.Image(gt_to_save)
+                        }, step=completed_steps)
 
             if completed_steps >= args.max_train_steps:
                 break

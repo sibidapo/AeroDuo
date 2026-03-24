@@ -10,4 +10,4 @@ python -u full_eval.py \
     --run_type eval \
     --llm_checkpoint_path ./pilot_llm/weights/AeroDuo-PilotLLM \
     --eval_save_path ./output \
-    --dataset_path ./data/test_unseen_new.json
+    --dataset_path ./data/test_data_sample.json

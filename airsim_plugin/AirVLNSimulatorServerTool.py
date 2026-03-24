@@ -20,7 +20,7 @@ AIRSIM_SETTINGS_TEMPLATE = {
   "SettingsVersion": 1.2,
   "SimMode": "Multirotor",
   "ClockSpeed": 10,
-  "ViewMode": "NoDisplay",
+  "ViewMode": "FlyWithMe",
   "PhysiceEngineName": "ExternalPhysicsEngine",
   "Recording": {
     "RecordInterval": 1,
@@ -192,7 +192,7 @@ AIRSIM_SETTINGS_TEMPLATE_2UAV = {
     "SettingsVersion": 1.2,
     "SimMode": "Multirotor",
     "ClockSpeed": 10,
-    "ViewMode": "NoDisplay",
+    "ViewMode": "FlyWithMe",
     "PhysiceEngineName": "ExternalPhysicsEngine",
     "Recording": {
         "RecordInterval": 1,
@@ -691,10 +691,10 @@ class EventHandler(object):
                 continue
             if 'Carla' in scen_id:
                 idx = scen_id.split('Town')[-1]
-                SEARCH_ENVs_PATH = Path(f'envs/carla_town_envs/Town{idx}/LinuxNoEditor')
+                SEARCH_ENVs_PATH = PROJECT_ROOT_DIR / Path(f'ENVs/carla_town_envs/Town{idx}/LinuxNoEditor')
                 res = glob.glob((str(SEARCH_ENVs_PATH / 'CarlaUE4.sh')))
             else:
-                SEARCH_ENVs_PATH = Path('envs/closeloop_envs')
+                SEARCH_ENVs_PATH = PROJECT_ROOT_DIR / Path('ENVs/closeloop_envs')
                 res = glob.glob((str(SEARCH_ENVs_PATH / (scen_id + '.sh'))))
             print(str(SEARCH_ENVs_PATH / (scen_id + '.sh')))
             if len(res) > 0:
@@ -734,7 +734,7 @@ class EventHandler(object):
                 p_s.append(None)
                 continue
             else:
-                subprocess_execute = "bash {} -RenderOffscreen -NoSound -NoVSync -GraphicsAdapter={} -settings={} ".format(
+                subprocess_execute = "bash {} -windowed -ResX=1280 -ResY=720 -NoSound -NoVSync -GraphicsAdapter={} -settings={} ".format(
                     choose_env_exe_paths[index],
                     gpu_id,
                     str(CWD_DIR / 'airsim_plugin/settings' / str(ports[index]) / 'settings.json'),
@@ -776,7 +776,7 @@ class EventHandler(object):
         res = glob.glob((str(SEARCH_ENVs_PATH / (scene_id + '.sh'))))
         env_path = res[0]
         
-        subprocess_execute = "bash {} -RenderOffscreen -NoSound -NoVSync -GraphicsAdapter={} -settings={} ".format(
+        subprocess_execute = "bash {} -windowed -ResX=1280 -ResY=720 -NoSound -NoVSync -GraphicsAdapter={} -settings={} ".format(
                     env_path,
                     gpu_id,
                     str(CWD_DIR / 'airsim_plugin/settings' / str(port) / 'settings.json'),
@@ -900,11 +900,11 @@ if __name__ == '__main__':
     HOST = '127.0.0.1'
     PORT = int(args.port)
     CWD_DIR = Path(str(os.getcwd())).resolve()
-    PROJECT_ROOT_DIR = CWD_DIR.parent.parent.parent
+    PROJECT_ROOT_DIR = CWD_DIR.parent
     print("PROJECT_ROOT_DIR",PROJECT_ROOT_DIR)
     # SEARCH_ENVs_PATH = PROJECT_ROOT_DIR / 'envs/anew_test/ghx/BrushifyCountryRoads_612_zichan/'  # TODO 
-    SEARCH_ENVs_PATH = Path('envs/closeloop_envs')
-    assert os.path.exists(str(SEARCH_ENVs_PATH)), 'error'
+    SEARCH_ENVs_PATH = PROJECT_ROOT_DIR / Path('ENVs/carla_town_envs')
+    assert os.path.exists(str(SEARCH_ENVs_PATH)), f'Env: {SEARCH_ENVs_PATH} not found'
 
     gpu_list = []
     gpus = str(args.gpus).split(',') 
