@@ -1,0 +1,62 @@
+{
+  "dataset_dir": "aeroduo/data/Hal-13k/Carla_Town01",
+  "output_dir": "aeroduo/pilot_llm/high_uav/verification_outputs/batch_quick",
+  "num_episodes": 1,
+  "total_frames_processed": 1,
+  "goal_detection_rate_overall": 1.0,
+  "avg_detections_per_frame_overall": 4.0,
+  "avg_contextual_detections_per_frame_overall": 3.0,
+  "failed_images": [],
+  "complete_failure_episodes": [],
+  "episode_summaries": [
+    {
+      "episode": "aeroduo/data/Hal-13k/Carla_Town01/00c9b2a9-eaa8-4b18-86ad-9f402e5cbb51",
+      "goal_object": "man",
+      "contextual_nouns": [
+        "tall evergreen trees",
+        "paved street",
+        "curved road",
+        "bushes"
+      ],
+      "frames_total": 1,
+      "frames_processed": 1,
+      "frames_failed": 0,
+      "goal_detected_count": 1,
+      "goal_detection_rate": 1.0,
+      "avg_detections_per_frame": 4.0,
+      "avg_contextual_detections_per_frame": 3.0,
+      "frame_results": [
+        {
+          "frame": "000000.png",
+          "goal_detected": true,
+          "num_detections": 4,
+          "num_contextual_detections": 3,
+          "detections": [
+            {
+              "category": "man",
+              "confidence": 0.3095,
+              "is_goal": true
+            },
+            {
+              "category": "tall evergreen trees",
+              "confidence": 0.6405,
+              "is_goal": false
+            },
+            {
+              "category": "paved street",
+              "confidence": 0.4527,
+              "is_goal": false
+            },
+            {
+              "category": "bushes",
+              "confidence": 0.3035,
+              "is_goal": false
+            }
+          ]
+        }
+      ],
+      "failed_images": [],
+      "output_dir": "aeroduo/pilot_llm/high_uav/verification_outputs/batch_quick/Carla_Town01/00c9b2a9-eaa8-4b18-86ad-9f402e5cbb51"
+    }
+  ]
+}

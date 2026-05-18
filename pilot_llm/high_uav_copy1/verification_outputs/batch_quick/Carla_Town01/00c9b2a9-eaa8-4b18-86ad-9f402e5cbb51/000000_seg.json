@@ -1,0 +1,94 @@
+{
+  "image_path": "aeroduo/data/Hal-13k/Carla_Town01/00c9b2a9-eaa8-4b18-86ad-9f402e5cbb51/bevcamera/000000.png",
+  "image_width": 1024,
+  "image_height": 1024,
+  "goal_category": "man",
+  "goal_detected": true,
+  "prompt_list": [
+    "man",
+    "tall evergreen trees",
+    "paved street",
+    "curved road",
+    "bushes"
+  ],
+  "num_detections": 4,
+  "detections": [
+    {
+      "id": 0,
+      "category": "man",
+      "bbox_xyxy": [
+        597.82,
+        669.32,
+        984.63,
+        1021.98
+      ],
+      "confidence": 0.3095,
+      "is_goal": true,
+      "source_prompt": "man",
+      "prompt_index": 0,
+      "grounding_phrase": "man",
+      "mask_key": "mask_0000",
+      "dinov2_embedding": null
+    },
+    {
+      "id": 1,
+      "category": "tall evergreen trees",
+      "bbox_xyxy": [
+        3.0,
+        1.51,
+        1020.48,
+        450.41
+      ],
+      "confidence": 0.6405,
+      "is_goal": false,
+      "source_prompt": "tall evergreen trees",
+      "prompt_index": 1,
+      "grounding_phrase": "tall evergreen trees",
+      "mask_key": "mask_0001",
+      "dinov2_embedding": null
+    },
+    {
+      "id": 2,
+      "category": "paved street",
+      "bbox_xyxy": [
+        2.42,
+        515.03,
+        1021.64,
+        1020.41
+      ],
+      "confidence": 0.4527,
+      "is_goal": false,
+      "source_prompt": "paved street",
+      "prompt_index": 2,
+      "grounding_phrase": "paved street",
+      "mask_key": "mask_0002",
+      "dinov2_embedding": null
+    },
+    {
+      "id": 3,
+      "category": "bushes",
+      "bbox_xyxy": [
+        0.91,
+        0.43,
+        439.43,
+        445.02
+      ],
+      "confidence": 0.3035,
+      "is_goal": false,
+      "source_prompt": "bushes",
+      "prompt_index": 4,
+      "grounding_phrase": "bushes",
+      "mask_key": "mask_0003",
+      "dinov2_embedding": null
+    }
+  ],
+  "masks_npz_path": "000000_masks.npz",
+  "instruction_path": "aeroduo/data/Hal-13k/Carla_Town01/00c9b2a9-eaa8-4b18-86ad-9f402e5cbb51/object_description_with_help.json",
+  "description_text": "The man is walking on a road near some bushes and tall evergreen trees, situated in an area that features urban buildings with a visible street lamp, surrounded by a paved street, curved road, and greenery along the sides.",
+  "contextual_categories": [
+    "tall evergreen trees",
+    "paved street",
+    "curved road",
+    "bushes"
+  ]
+}

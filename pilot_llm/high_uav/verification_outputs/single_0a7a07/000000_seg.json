@@ -1,0 +1,149 @@
+{
+  "image_path": "aeroduo/data/Hal-13k/Carla_Town01/0a7a07a1-0757-4528-9463-ca6c0eb2ec92/bevcamera/000000.png",
+  "image_width": 1024,
+  "image_height": 1024,
+  "goal_category": "motorcycle",
+  "goal_detected": false,
+  "prompt_list": [
+    "motorcycle",
+    "bridge",
+    "yellow lane markings",
+    "rocky formations",
+    "light posts",
+    "river",
+    "trees"
+  ],
+  "num_detections": 7,
+  "detections": [
+    {
+      "id": 0,
+      "category": "bridge",
+      "bbox_xyxy": [
+        1.82,
+        469.63,
+        1021.99,
+        1020.94
+      ],
+      "confidence": 0.5863,
+      "is_goal": false,
+      "source_prompt": "bridge",
+      "prompt_index": 1,
+      "grounding_phrase": "bridge",
+      "mask_key": "mask_0000",
+      "dinov2_embedding": null
+    },
+    {
+      "id": 1,
+      "category": "rocky formations",
+      "bbox_xyxy": [
+        29.66,
+        763.67,
+        356.99,
+        1022.2
+      ],
+      "confidence": 0.493,
+      "is_goal": false,
+      "source_prompt": "rocky formations",
+      "prompt_index": 3,
+      "grounding_phrase": "rocky formations",
+      "mask_key": "mask_0001",
+      "dinov2_embedding": null
+    },
+    {
+      "id": 2,
+      "category": "rocky formations",
+      "bbox_xyxy": [
+        603.48,
+        658.84,
+        1016.68,
+        1021.11
+      ],
+      "confidence": 0.3784,
+      "is_goal": false,
+      "source_prompt": "rocky formations",
+      "prompt_index": 3,
+      "grounding_phrase": "rocky formations",
+      "mask_key": "mask_0002",
+      "dinov2_embedding": null
+    },
+    {
+      "id": 3,
+      "category": "light posts",
+      "bbox_xyxy": [
+        2.84,
+        610.64,
+        468.69,
+        1021.34
+      ],
+      "confidence": 0.3727,
+      "is_goal": false,
+      "source_prompt": "light posts",
+      "prompt_index": 4,
+      "grounding_phrase": "light posts",
+      "mask_key": "mask_0003",
+      "dinov2_embedding": null
+    },
+    {
+      "id": 4,
+      "category": "river",
+      "bbox_xyxy": [
+        779.6,
+        156.47,
+        1022.68,
+        471.2
+      ],
+      "confidence": 0.3314,
+      "is_goal": false,
+      "source_prompt": "river",
+      "prompt_index": 5,
+      "grounding_phrase": "river",
+      "mask_key": "mask_0004",
+      "dinov2_embedding": null
+    },
+    {
+      "id": 5,
+      "category": "trees",
+      "bbox_xyxy": [
+        1.91,
+        0.21,
+        1022.2,
+        440.32
+      ],
+      "confidence": 0.6013,
+      "is_goal": false,
+      "source_prompt": "trees",
+      "prompt_index": 6,
+      "grounding_phrase": "trees",
+      "mask_key": "mask_0005",
+      "dinov2_embedding": null
+    },
+    {
+      "id": 6,
+      "category": "trees",
+      "bbox_xyxy": [
+        0.52,
+        0.79,
+        288.57,
+        428.97
+      ],
+      "confidence": 0.3378,
+      "is_goal": false,
+      "source_prompt": "trees",
+      "prompt_index": 6,
+      "grounding_phrase": "trees",
+      "mask_key": "mask_0006",
+      "dinov2_embedding": null
+    }
+  ],
+  "masks_npz_path": "000000_masks.npz",
+  "instruction_path": "aeroduo/data/Hal-13k/Carla_Town01/0a7a07a1-0757-4528-9463-ca6c0eb2ec92/object_description_with_help.json",
+  "description_text": "The motorcycle is purple, located on a bridge with yellow lane markings, and is surrounded by a landscape featuring a river, rocky formations, trees, and light posts; the environment appears to be overcast and misty with limited visibility.",
+  "contextual_categories": [
+    "bridge",
+    "yellow lane markings",
+    "rocky formations",
+    "light posts",
+    "river",
+    "trees"
+  ]
+}

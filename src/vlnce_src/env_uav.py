@@ -317,7 +317,7 @@ class AirVLNENV:
             delta = min(self.batch_size, item['MAX_SCENE_NUM'], len(using_map_list)-ix)
             machines_info[index]['open_scenes'] = using_map_list[ix : ix + delta]
             # TODO: gpus !!!
-            machines_info[index]['gpus'] = [args.gpu_id] * 8
+            machines_info[index]['gpus'] = [1] * 1
             ix += delta
 
         cnt = 0

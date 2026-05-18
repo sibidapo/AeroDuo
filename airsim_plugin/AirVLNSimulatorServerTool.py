@@ -20,7 +20,7 @@ AIRSIM_SETTINGS_TEMPLATE = {
   "SettingsVersion": 1.2,
   "SimMode": "Multirotor",
   "ClockSpeed": 10,
-  "ViewMode": "FlyWithMe",
+  "ViewMode": "NoDisplay", #FlyWithMe
   "PhysiceEngineName": "ExternalPhysicsEngine",
   "Recording": {
     "RecordInterval": 1,
@@ -192,7 +192,7 @@ AIRSIM_SETTINGS_TEMPLATE_2UAV = {
     "SettingsVersion": 1.2,
     "SimMode": "Multirotor",
     "ClockSpeed": 10,
-    "ViewMode": "FlyWithMe",
+    "ViewMode": "NoDisplay", #FlyWithMe
     "PhysiceEngineName": "ExternalPhysicsEngine",
     "Recording": {
         "RecordInterval": 1,
@@ -734,11 +734,11 @@ class EventHandler(object):
                 p_s.append(None)
                 continue
             else:
-                subprocess_execute = "bash {} -windowed -ResX=1280 -ResY=720 -NoSound -NoVSync -GraphicsAdapter={} -settings={} ".format(
+                subprocess_execute = "bash {} -RenderOffscreen -NoSound -NoVSync -GraphicsAdapter={} -settings={} ".format(
                     choose_env_exe_paths[index],
                     gpu_id,
                     str(CWD_DIR / 'airsim_plugin/settings' / str(ports[index]) / 'settings.json'),
-                )
+                ) #-windowed -ResX=1280 -ResY=720
                 time.sleep(1)
                 print(subprocess_execute)
 
@@ -776,11 +776,11 @@ class EventHandler(object):
         res = glob.glob((str(SEARCH_ENVs_PATH / (scene_id + '.sh'))))
         env_path = res[0]
         
-        subprocess_execute = "bash {} -windowed -ResX=1280 -ResY=720 -NoSound -NoVSync -GraphicsAdapter={} -settings={} ".format(
+        subprocess_execute = "bash {} -RenderOffscreen -NoSound -NoVSync -GraphicsAdapter={} -settings={} ".format(
                     env_path,
                     gpu_id,
                     str(CWD_DIR / 'airsim_plugin/settings' / str(port) / 'settings.json'),
-                )
+                ) #-windowed -ResX=1280 -ResY=720
         time.sleep(1)
         print(subprocess_execute)
         
