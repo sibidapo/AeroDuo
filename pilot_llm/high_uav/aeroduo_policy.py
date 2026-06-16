@@ -386,3 +386,4 @@ class AeroDuoPolicy(nn.Module):
         yield "obs_vertex_builder", self.obs_vertex_builder
         yield "graph_encoder",      self.graph_encoder
         yield "flow_net",           self.flow_net
+        yield "vlm_encoder.pose_token_proj", self.vlm_encoder.pose_token_proj

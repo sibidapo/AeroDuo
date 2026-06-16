@@ -1,3 +1,4 @@
+# Stage 1 AeroDuoPolicy — externally frozen, not a registered submodule
 vlm_encoder.vlm.model.vision_model.embeddings.patch_embedding.weight  [1152, 3, 14, 14]
 vlm_encoder.vlm.model.vision_model.embeddings.patch_embedding.bias  [1152]
 vlm_encoder.vlm.model.vision_model.embeddings.position_embedding.weight  [729, 1152]
