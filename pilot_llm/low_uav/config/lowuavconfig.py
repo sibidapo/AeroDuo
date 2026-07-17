@@ -19,11 +19,11 @@ class FeatureMergerConfig:
 @dataclass
 class DITConfig:
 
-    num_attention_heads: int = field(default=32, metadata={"help": "Number of attention heads"})
+    num_attention_heads: int = field(default=16, metadata={"help": "Number of attention heads"})
 
     attention_head_dim: int = field(default=48, metadata={"help": "Attention head dim"})
 
-    num_layers: int = field(default=16, metadata={"help": "Number of interleavened self and cross attention layers"})
+    num_layers: int = field(default=8, metadata={"help": "Number of interleavened self and cross attention layers"})
 
     max_num_positional_embeddings: int = field(default=512, metadata={"help":""})
 
@@ -31,7 +31,7 @@ class DITConfig:
 
     cross_attention_dim: int = field(default=2048, metadata={"help":"Cross attention dim"})
 
-    dropout: float = field(default=0.2, metadata={"help":"Dropout probability"})
+    dropout: float = field(default=0.1, metadata={"help":"Dropout probability"})
 
     activation_fn: str = field(default="gelu-approximate", metadata={"help":""})
 
@@ -66,6 +66,8 @@ class LowUAVConfig:
     vlm_layer_cutoff: int = field(default=12, metadata={"help":"num_hidden_layers = 24 → cutoff = 24 // 2 = 12."})
 
     ## ACTION HEAD
+    use_zgraph: bool = field(default=True, metadata={"help": "Condition the action head on the high-UAV z_graph via the FeatureMerger. False → standalone low-UAV: DiT cross-attends to the (LayerNormed) VLM embeddings directly and Stage 1 is never called."})
+
     action_horizon: int = field(default=8, metadata={"help":"action horizon of low UAV"})
 
     vlm_hidden_dim: int = field(default=2048, metadata={"help":"Hidden size of the LLaMA text decoder inside SmolVLM2-2.2B-Instruct"})
@@ -78,11 +80,11 @@ class LowUAVConfig:
 
     state_dim: int = field(default=5, metadata={"help": "Action Dim -> [x, y, z, sin_h, cos_h]"})
 
-    hidden_dim: int = field(default=1024, metadata={"help": "State and Action encoder hidden size"})
+    hidden_dim: int = field(default=512, metadata={"help": "State and Action encoder hidden size"})
 
-    output_dim: int = field(default=1024, metadata={"help": ""})
+    output_dim: int = field(default=512, metadata={"help": ""})
 
-    input_emb_dim: int = field(default=1536, metadata={"help": "DIT input dim"})
+    input_emb_dim: int = field(default=768, metadata={"help": "DIT input dim; must equal num_attention_heads * attention_head_dim"})
 
     max_seq_len: int = field(default=1024, metadata={"help":""})
 

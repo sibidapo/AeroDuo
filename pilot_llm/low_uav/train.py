@@ -7,7 +7,7 @@ MSE loss.  Stage 1 (AeroDuoPolicy) and LowVLMEncoder are both fully frozen.
 Architecture
 ------------
 Frozen (called under torch.no_grad):
-    AeroDuoPolicy.encode_graph  BEV + instruction + poses → z_graph [B, T, D_g]
+    AeroDuoPolicy.get_graph     BEV + instruction + poses → z_graph [B, T, D_g]
     LowVLMEncoder               front-cam + instruction   → vl_embs [B, L, H]
 
 Trainable:
@@ -30,6 +30,13 @@ python train.py \\
 Resuming
 --------
 python train.py ... --resume ./checkpoint/stage2/main/checkpoint-10000/trainable_state.pt
+
+Standalone low-UAV (no high-UAV input)
+--------------------------------------
+Pass --no_zgraph to train the action head without z_graph conditioning: the DiT
+cross-attends to the VLM embeddings alone, and Stage 1 / SAM2 / GroundingDINO
+are never loaded (--stage1_ckpt not needed).  Checkpoints from the two modes are
+not interchangeable (FeatureMerger exists only with z_graph).
 """
 
 from __future__ import annotations
@@ -68,7 +75,7 @@ from config.lowuavconfig import LowUAVConfig
 from lowuav_policy import LowUAVPolicy
 from high_uav.aeroduo_policy import AeroDuoPolicy
 from high_uav.config import AeroduoConfig
-from high_uav.dataset2 import AeroduoDataset, collate_fn
+from low_uav.dataset2 import AeroduoDataset, collate_fn
 from high_uav.bev_segmentation import load_models
 
 logger = get_logger(__name__)
@@ -81,6 +88,8 @@ _POLICY_KEYS = frozenset({
     "low_uav_pose_current",
     "low_uav_traj_target",
     "instruction",
+    "goal_offsets",
+    "low_goal_offset",
 })
 
 
@@ -93,8 +102,12 @@ def parse_args() -> argparse.Namespace:
 
     parser.add_argument("--dataset_root", type=str, required=True,
                         help="Root of the Hal-13k dataset.")
-    parser.add_argument("--stage1_ckpt", type=str, required=True,
-                        help="Path to Stage 1 trainable_state.pt checkpoint.")
+    parser.add_argument("--stage1_ckpt", type=str, default=None,
+                        help="Path to Stage 1 trainable_state.pt checkpoint. "
+                             "Required unless --no_zgraph is set.")
+    parser.add_argument("--no_zgraph", action="store_true",
+                        help="Train the low UAV standalone: no z_graph conditioning, "
+                             "Stage 1 / SAM2 / GroundingDINO are never loaded.")
     parser.add_argument("--towns", nargs="*", default=None,
                         help="Restrict to these town directory names.  Default: all Carla_*.")
     parser.add_argument("--window_T",       type=int, default=5)
@@ -130,7 +143,10 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--num_warmup_steps", type=int, default=200)
 
-    return parser.parse_args()
+    args = parser.parse_args()
+    if not args.no_zgraph and args.stage1_ckpt is None:
+        parser.error("--stage1_ckpt is required unless --no_zgraph is set")
+    return args
 
 
 # ── Checkpoint helpers ────────────────────────────────────────────────────────
@@ -240,36 +256,42 @@ def main() -> None:
                 "seed":                        args.seed,
                 "dataset_root":                args.dataset_root,
                 "stage1_ckpt":                 args.stage1_ckpt,
+                "use_zgraph":                  not args.no_zgraph,
             },
             dir=args.output_dir,
             resume="allow",
         )
 
-    # ── Frozen Stage 1 policy ─────────────────────────────────────────────────
+    # ── Frozen Stage 1 policy (skipped entirely with --no_zgraph) ─────────────
     device_str = str(accelerator.device)
-    logger.info("Loading SAM2 + GroundingDINO on %s …", device_str)
-    sam2_predictor, grounding_model, _ = load_models(device=device_str)
+    stage1_policy = None
+    if args.no_zgraph:
+        logger.info("--no_zgraph: standalone low-UAV training, Stage 1 not loaded.")
+    else:
+        logger.info("Loading SAM2 + GroundingDINO on %s …", device_str)
+        sam2_predictor, grounding_model, _ = load_models(device=device_str)
 
-    stage1_cfg = AeroduoConfig(
-        window_T=args.window_T,
-        action_horizon=args.action_horizon,
-        mixed_precision=args.mixed_precision,
-    )
-    logger.info("Building frozen Stage 1 AeroDuoPolicy …")
-    stage1_policy = AeroDuoPolicy(stage1_cfg, sam2_predictor, grounding_model)
+        stage1_cfg = AeroduoConfig(
+            window_T=args.window_T,
+            action_horizon=args.action_horizon,
+            mixed_precision=args.mixed_precision,
+        )
+        logger.info("Building frozen Stage 1 AeroDuoPolicy …")
+        stage1_policy = AeroDuoPolicy(stage1_cfg, sam2_predictor, grounding_model)
 
-    raw_ckpt = torch.load(args.stage1_ckpt, map_location=device_str, weights_only=True)
-    state_dict = raw_ckpt["model"] if "model" in raw_ckpt else raw_ckpt
-    stage1_policy.load_trainable_state_dict(state_dict, strict=True)
-    stage1_policy.eval()
-    for p in stage1_policy.parameters():
-        p.requires_grad_(False)
-    stage1_policy = stage1_policy.to(device_str)
-    logger.info("Stage 1 checkpoint loaded and frozen: %s", args.stage1_ckpt)
+        raw_ckpt = torch.load(args.stage1_ckpt, map_location=device_str, weights_only=True)
+        state_dict = raw_ckpt["model"] if "model" in raw_ckpt else raw_ckpt
+        stage1_policy.load_trainable_state_dict(state_dict, strict=True)
+        stage1_policy.eval()
+        for p in stage1_policy.parameters():
+            p.requires_grad_(False)
+        stage1_policy = stage1_policy.to(device_str)
+        logger.info("Stage 1 checkpoint loaded and frozen: %s", args.stage1_ckpt)
 
     # ── Stage 2 policy ────────────────────────────────────────────────────────
     _precision_to_dtype = {"bf16": torch.bfloat16, "fp16": torch.float16, "no": torch.float32}
     low_cfg = LowUAVConfig(
+        use_zgraph=not args.no_zgraph,
         action_horizon=args.action_horizon,
         dtype=_precision_to_dtype[args.mixed_precision],
         device=args.device,

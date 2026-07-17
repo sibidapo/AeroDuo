@@ -11,12 +11,14 @@ BEVEncoder (frozen, plain Python — not nn.Module)
     → image_embeds [T,256,64,64]  |  masks_arrays  |  detections_list
 
 SmolVLM2Encoder (frozen nn.Module)
-    per BEV frame: image + instruction + poses → hidden_states [1, S, 2048]
+    per BEV frame: image + instruction → hidden_states [1, S, 2048]
 
-PositionVertexBuilder (trainable)   [T,S,2048] → [T,D_g]
+PositionVertexBuilder (trainable)   [T,S,2048] + high/low poses → [T,D_g]
+    PoseFeatureMerger cross-attention (Q = VLM hidden, K/V = projected poses)
+    followed by PerceiverIO pooling
 ObservationVertexBuilder (trainable) SAM2 mask-pool → [T,K,D_g]
 GraphEncoder (trainable)            HGTConv × 3   → z_graph [T,D_g]
-FlowMatchingNetwork (trainable)     DiT denoiser  → v_pred [H,4], L_flow = MSE
+FlowMatchingNetwork (trainable)     GR00T-style DiT head → L_flow (noise + τ sampled inside)
 
 Effective-batch strategy
 ------------------------
@@ -82,6 +84,7 @@ _POLICY_KEYS = frozenset({
     "low_uav_pose_current",
     "low_uav_traj_target",
     "instruction",
+    "goal_offsets",
 })
 
 
@@ -150,7 +153,7 @@ def parse_args() -> argparse.Namespace:
         help="Override num_train_epochs by specifying a total step budget.",
     )
     parser.add_argument(
-        "--gradient_accumulation_steps", type=int, default=4,
+        "--gradient_accumulation_steps", type=int, default=8,
         help="Accumulate this many per-episode gradients before one optimizer step. "
              "Effective batch size = gradient_accumulation_steps (since batch_size=1).",
     )
@@ -162,7 +165,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=42)
 
     # Optimizer
-    parser.add_argument("--learning_rate",  type=float, default=3e-4)
+    parser.add_argument("--learning_rate",  type=float, default=1e-4)
     parser.add_argument("--adam_beta1",     type=float, default=0.9)
     parser.add_argument("--adam_beta2",     type=float, default=0.999)
     parser.add_argument("--adam_epsilon",   type=float, default=1e-8)
@@ -172,7 +175,7 @@ def parse_args() -> argparse.Namespace:
         choices=["linear", "cosine", "cosine_with_restarts",
                  "polynomial", "constant", "constant_with_warmup"],
     )
-    parser.add_argument("--num_warmup_steps", type=int, default=200)
+    parser.add_argument("--num_warmup_steps", type=int, default=1000)
 
     args = parser.parse_args()
     return args
@@ -314,11 +317,10 @@ def main() -> None:
     trainable_params = [
         p
         for submodule in (
-            policy.place_node_builder,
+            policy.place_node_builder,   # includes PoseFeatureMerger
             policy.obs_vertex_builder,
             policy.graph_encoder,
             policy.flow_net,
-            policy.vlm_encoder.pose_token_proj,
         )
         for p in submodule.parameters()
         if p.requires_grad
@@ -448,6 +450,18 @@ def main() -> None:
                 loss = out["loss"]
 
                 accelerator.backward(loss)
+
+                # Gradients are complete only on sync steps; capture the norm
+                # here — optimizer.zero_grad() below sets .grad to None, so
+                # computing it in the logging block would always yield 0.
+                if accelerator.sync_gradients:
+                    grad_norm = sum(
+                        p.grad.detach().norm().item() ** 2
+                        for group in optimizer.param_groups
+                        for p in group["params"]
+                        if p.grad is not None
+                    ) ** 0.5
+
                 optimizer.step()
                 lr_scheduler.step()
                 optimizer.zero_grad()
@@ -460,20 +474,12 @@ def main() -> None:
                 if completed_steps % args.log_every_n_steps == 0:
                     step_loss  = loss.detach().item()
                     current_lr = lr_scheduler.get_last_lr()[0]
-                    tau_val    = out["tau"].mean().item()
-                    grad_norm  = sum(
-                        p.grad.detach().norm().item() ** 2
-                        for group in optimizer.param_groups
-                        for p in group["params"]
-                        if p.grad is not None
-                    ) ** 0.5
 
                     progress_bar.set_postfix(loss=f"{step_loss:.4f}", lr=f"{current_lr:.2e}")
 
                     if tb_writer is not None:
                         tb_writer.add_scalar("Loss/train", step_loss,  completed_steps)
                         tb_writer.add_scalar("LR",         current_lr, completed_steps)
-                        tb_writer.add_scalar("tau",        tau_val,    completed_steps)
                         tb_writer.add_scalar("grad_norm",  grad_norm,  completed_steps)
 
                     if wandb.run is not None:
@@ -481,7 +487,6 @@ def main() -> None:
                             {
                                 "loss":      step_loss,
                                 "lr":        current_lr,
-                                "tau":       tau_val,
                                 "grad_norm": grad_norm,
                                 "epoch":     epoch,
                             },

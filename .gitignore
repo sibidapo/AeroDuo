@@ -60,8 +60,12 @@ desktop.ini
 checkpoints/
 *.ckpt
 *.pth
+*.pt
+*.checkpoints/
 weights/
 pretrained_weights/
+
+checkpoint/
 
 # Tensorboard
 runs/
@@ -124,10 +128,18 @@ airsim_*_client.log
 # -----------------------------
 #!/bin/sh
 # Ignore a specific dataset subfolder instead of entire data/
-HaL-13k
+data/Hal-13k/
+data/Hal-13k_test/
 
 envs/
 
 # GroudingDino
 GroundingDINO
 bert-base-uncased
+
+#wandb
+wandb/
+
+*.cache
+
+data/train_data_new.json

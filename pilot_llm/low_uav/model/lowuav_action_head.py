@@ -403,7 +403,14 @@ class LowUAVActionHead(nn.Module):
             compute_dtype=cfg.dtype,
             **dataclasses.asdict(cfg.dit_cfg),
         )
-        self.feat_merger = FeatureMerger(cfg.feat_merger_cfg, cfg.vlm_hidden_dim, cfg.D_g)
+        self.use_zgraph = cfg.use_zgraph
+        if cfg.use_zgraph:
+            self.feat_merger = FeatureMerger(cfg.feat_merger_cfg, cfg.vlm_hidden_dim, cfg.D_g)
+        else:
+            # Standalone mode: no FeatureMerger. The truncated VLM emits un-normed
+            # mid-layer states, and the merger's final LayerNorm is what the DiT
+            # normally sees — so keep a LayerNorm in its place.
+            self.vl_norm = nn.LayerNorm(cfg.vlm_hidden_dim)
 
         if cfg.add_pos_embed:
             self.position_embedding = nn.Embedding(cfg.max_seq_len, cfg.input_emb_dim)
@@ -414,6 +421,15 @@ class LowUAVActionHead(nn.Module):
         self.state_encoder = MLP(cfg.state_dim, cfg.hidden_dim, cfg.input_emb_dim)
         self.action_encoder = ActionEncoder(cfg.action_dim, cfg.input_emb_dim)
         self.action_decoder = MLP(cfg.output_dim, cfg.hidden_dim, cfg.action_dim)
+
+    def _condition_feats(
+        self, vl_embs: torch.Tensor, z_graph: Optional[torch.Tensor]
+    ) -> torch.Tensor:
+        """DiT conditioning: vl_embs × z_graph via FeatureMerger, or vl_embs alone."""
+        if self.use_zgraph:
+            assert z_graph is not None, "use_zgraph=True but z_graph is None"
+            return self.feat_merger(z_graph, vl_embs)  # [B, L, H]
+        return self.vl_norm(vl_embs.to(dtype=self.vl_norm.weight.dtype))
 
     def _encode_heading(self, pose: torch.Tensor) -> torch.Tensor:
         xyz = pose[..., :3]
@@ -426,10 +442,10 @@ class LowUAVActionHead(nn.Module):
 
     def forward(
         self,
-        vl_embs: torch.Tensor,     # [B, L, H]
-        z_graph: torch.Tensor,     # [B, T_h, D_g]
-        low_state: torch.Tensor,   # [B, 4]
-        low_actions: torch.Tensor, # [B, T_l, 4]
+        vl_embs: torch.Tensor,               # [B, L, H]
+        z_graph: Optional[torch.Tensor],     # [B, T_h, D_g], or None when use_zgraph=False
+        low_state: torch.Tensor,             # [B, 4]
+        low_actions: torch.Tensor,           # [B, T_l, 4]
     ) -> torch.Tensor:
 
         device = vl_embs.device
@@ -441,7 +457,7 @@ class LowUAVActionHead(nn.Module):
         assert low_state.dim() == 3, f"Expected low_state (B, 1, D), got {tuple(low_state.shape)}"
 
         low_actions = low_actions.to(device=device, dtype=dtype)
-        merged_feats = self.feat_merger(z_graph, vl_embs) # (B, L, H)
+        merged_feats = self._condition_feats(vl_embs, z_graph)  # (B, L, H)
 
         low_state   = self._encode_heading(low_state)    # [B, 1, 4] -> [B, 1, 5]
         low_actions = self._encode_heading(low_actions)  # [B, T, 4] -> [B, T, 5]
@@ -496,7 +512,7 @@ class LowUAVActionHead(nn.Module):
     def predict_action(
         self,
         vl_embs: torch.Tensor,
-        z_graph: torch.Tensor,
+        z_graph: Optional[torch.Tensor],
         low_state: torch.Tensor,
     ) -> torch.Tensor:
         """
@@ -504,7 +520,8 @@ class LowUAVActionHead(nn.Module):
 
         Args:
             vlm_embs: egocentric vlm embeddings from low UAV [B, seq_len, vlm_emb_dim]
-            z_graph: shared graph embeddings from high UAV [B, T_h, D_g]
+            z_graph: shared graph embeddings from high UAV [B, T_h, D_g], or None
+                when use_zgraph=False (standalone low-UAV mode)
             low_state: low UAV state [B, 4] -> [x, y, z, heading]
 
         Returns:
@@ -526,7 +543,7 @@ class LowUAVActionHead(nn.Module):
         dt = 1.0 / num_steps
 
         # =================Step 2: Prepare all input features ========================================
-        merged_feats = self.feat_merger(z_graph, vl_embs) # [B, L, H]
+        merged_feats = self._condition_feats(vl_embs, z_graph)  # [B, L, H]
 
         low_state   = low_state.to(device=device, dtype=dtype)
         if low_state.dim() == 2:  # [B, 4] -> [B, 1, 4]

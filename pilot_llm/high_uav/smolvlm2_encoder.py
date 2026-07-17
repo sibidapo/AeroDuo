@@ -16,13 +16,9 @@ After processor encoding, the input sequence contains:
     [BEV image tokens (variable length)]  [language tokens (variable length)]
     ^-- injected by SmolVLM2 processor as image patch tokens
 
-Two extra tokens are appended before the decoder forward:
-
-    [...image tokens...] [...language tokens...] [high_state_token] [low_state_token]
-                                                  ^[1]               ^[1]
-
-Causal attention means high_state_token attends to all image+language context;
-low_state_token attends to everything including high_state_token.
+The VLM sees image + language only.  UAV pose conditioning happens downstream:
+PositionVertexBuilder cross-attends the returned hidden states with projected
+high/low UAV pose tokens (PoseFeatureMerger) before PerceiverIO pooling.
 
 Notes on model internals
 ------------------------
@@ -36,8 +32,10 @@ Notes on model internals
 
 from __future__ import annotations
 
+import gc
 import logging
-from typing import Optional
+import math
+from typing import Optional, Sequence
 
 import torch
 import torch.nn as nn
@@ -51,34 +49,40 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 
-class UAVPoseProjector(nn.Module):
+# ── Fuzzy goal verbalisation ───────────────────────────────────────────────────
+#
+# Hal-13k compass frame (validated against the dataset's own directional priors
+# on all 5377 episodes, and against BEV pixel flow via phase correlation):
+#   +x = north = top of the BEV image,  +y = east = right of the image.
+# A goal offset is (Δnorth, Δeast) in metres from the high UAV's current
+# position to the target, so the bearing is atan2(Δeast, Δnorth) from north.
+# The BEV footprint is ≈95 m × 95 m, which the distance buckets align with:
+# "very close"/"close" targets are in view, "far away" targets are off-image.
+
+_COMPASS_8 = [
+    "north", "north-east", "east", "south-east",
+    "south", "south-west", "west", "north-west",
+]
+
+
+def fuzzy_goal_phrase(d_north: float, d_east: float) -> str:
     """
-    Project a UAV state into SmolVLM2 token space.
-
-    Uses the first four elements (x, y, z, heading_rad); heading is encoded
-    as (sin, cos), giving a fixed 5-dim input to a linear layer regardless of
-    the full state vector length.
-
-    Input  : Tensor [B, >=4]
-    Output : Tensor [B, 1, vlm_hidden_dim]
+    Verbalise a goal offset (Δnorth, Δeast in metres) as a fuzzy compass cue,
+    e.g. "to the south-west, a moderate distance away".
     """
-
-    def __init__(self, uav_pose_dim: int = 5, vlm_hidden_dim: int = 2048):
-        super().__init__()
-        self.proj = nn.Linear(uav_pose_dim, vlm_hidden_dim)
-
-    def _encode_heading(self, pose: torch.Tensor) -> torch.Tensor:
-        if pose.dim() == 1:
-            pose = pose.unsqueeze(0)
-        xyz   = pose[:, :3]
-        sin_h = torch.sin(pose[:, 3]).unsqueeze(-1)
-        cos_h = torch.cos(pose[:, 3]).unsqueeze(-1)
-        return torch.cat([xyz, sin_h, cos_h], dim=-1)  # [B, 5]
-
-    def forward(self, pose: torch.Tensor) -> torch.Tensor:
-        encoded = self._encode_heading(pose)       # [B, 5]
-        token   = self.proj(encoded)               # [B, vlm_hidden_dim]
-        return token.unsqueeze(1)                  # [B, 1, vlm_hidden_dim]
+    dist = math.hypot(d_north, d_east)
+    if dist < 10.0:
+        return "almost directly below you, near the centre of the image"
+    wind = _COMPASS_8[int(((math.degrees(math.atan2(d_east, d_north)) + 22.5) % 360.0) // 45.0)]
+    if dist < 30.0:
+        qual = "very close"
+    elif dist < 80.0:
+        qual = "close"
+    elif dist < 160.0:
+        qual = "a moderate distance away"
+    else:
+        qual = "far away"
+    return f"to the {wind}, {qual}"
 
 
 class SmolVLM2Encoder(nn.Module):
@@ -86,8 +90,9 @@ class SmolVLM2Encoder(nn.Module):
     Thin wrapper around SmolVLM2 that:
       - loads the model and processor once, frozen
       - physically truncates the decoder to vlm_layer_cutoff layers
-      - provides ``forward`` which fuses BEV image, language, and two UAV state
-        tokens, then returns the decoder's last_hidden_state
+      - provides ``forward`` which fuses BEV image and language, then returns
+        the decoder's last_hidden_state (pose conditioning happens downstream
+        in PositionVertexBuilder)
     """
 
     def __init__(self, cfg: AeroduoConfig) -> None:
@@ -116,17 +121,32 @@ class SmolVLM2Encoder(nn.Module):
         for param in self.vlm.parameters():
             param.requires_grad_(False)
 
-        self._lm_layers = self.vlm.model.text_model.layers
-        n = len(self._lm_layers)
+        # Keep the full layer list in a local only: storing it on self would
+        # register all 24 layers as a submodule and pin the truncated upper
+        # half (~half the decoder) in GPU memory for the whole run.
+        full_layers = self.vlm.model.text_model.layers
+        n = len(full_layers)
         logger.info(f"SmolVLM2 has {n} decoder layers.")
 
         cutoff = cfg.vlm_layer_cutoff if cfg.vlm_layer_cutoff is not None else n // 2
         self.vlm_layer_cutoff = cutoff
-        self.vlm.model.text_model.layers = self._lm_layers[:cutoff]
+        self.vlm.model.text_model.layers = full_layers[:cutoff]
+        # The slice creates a fresh ModuleList container after vlm.eval() ran;
+        # sync its (inert) training flag with the rest of the frozen backbone.
+        self.vlm.model.text_model.layers.eval()
+        del full_layers
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
         logger.info(f"Truncated decoder to {cutoff} layers (N//2 = {n // 2}).")
 
         self.hidden_size = self.vlm.config.text_config.hidden_size
-        self.pose_token_proj = UAVPoseProjector(uav_pose_dim=5, vlm_hidden_dim=self.hidden_size).to("cuda")
+
+    def train(self, mode: bool = True):
+        # Frozen backbone: parent .train() calls propagate here (e.g.
+        # policy.train() in the Stage 1 loop) — ignore them so the VLM stays
+        # in eval mode permanently.  Mirrors LowVLMEncoder in low_uav.
+        return self
 
     # ── Property: decoder layers (for LoRA attachment in Stage 4) ─────────────
     @property
@@ -157,7 +177,16 @@ class SmolVLM2Encoder(nn.Module):
         bev_image,
         language_text: str,
         device: torch.device = torch.device("cuda"),
+        goal_offset: Optional[Sequence[float]] = None,
     ) -> dict:
+        """
+        Build SmolVLM2 processor inputs for one BEV frame.
+
+        goal_offset : optional (Δnorth, Δeast) in metres from the high UAV's
+            *current* position to the target.  When given, the prompt carries a
+            per-frame fuzzy compass cue; otherwise it falls back to the static
+            start-based directional prior parsed from ``language_text``.
+        """
         text_parts = language_text.split(
             "The description of the target and its surrounding is shown below."
         )
@@ -165,6 +194,14 @@ class SmolVLM2Encoder(nn.Module):
             "Compass north corresponds to the top of the bird's-eye-view image."
         )[-1].strip()
         target_text = text_parts[-1].strip()
+
+        if goal_offset is not None:
+            direction_line = (
+                "From your present position the target lies "
+                f"{fuzzy_goal_phrase(float(goal_offset[0]), float(goal_offset[1]))}.\n"
+            )
+        else:
+            direction_line = f"Directional prior: {direction_text}\n"
 
         messages = [
             {
@@ -174,11 +211,17 @@ class SmolVLM2Encoder(nn.Module):
                     {
                         "type": "text",
                         "text": (
-                            "North-aligned bird's-eye-view aerial image.\n"
-                            f"Directional prior: {direction_text}\n"
+                            "You are the high-altitude scout of a two-UAV team, "
+                            "guiding a low-flying teammate to a ground target.\n"
+                            "The image is your north-aligned bird's-eye view: north is "
+                            "the top of the image, east is the right.\n"
                             f"Target: {target_text}\n"
-                            "Identify scene regions, landmarks and structures "
-                            "relevant for locating the target and guiding navigation toward it."
+                            f"{direction_line}"
+                            "Identify scene regions, landmarks and structures relevant "
+                            "for locating the target and guiding navigation toward it: "
+                            "note road layout, open corridors and obstacles between you "
+                            "and the target, and any structure that matches the target "
+                            "description."
                         ),
                     },
                 ],
@@ -194,38 +237,38 @@ class SmolVLM2Encoder(nn.Module):
         self,
         bev_image,
         lang_description: str,
-        low_state: torch.Tensor,
-        high_state: torch.Tensor,
         device: torch.device = torch.device("cuda"),
+        goal_offset: Optional[Sequence[float]] = None,
     ) -> torch.Tensor:
         """
-        Run SmolVLM2 with BEV image + language text, appending high/low UAV
-        state tokens, and return the decoder's last_hidden_state.
+        Run SmolVLM2 with BEV image + language text and return the decoder's
+        last_hidden_state.  UAV poses are NOT fed here — PositionVertexBuilder
+        cross-attends the returned hidden states with projected pose tokens.
 
         Token layout fed to the (truncated) decoder
         --------------------------------------------
-        [BEV image tokens] [language tokens] [high_state_token] [low_state_token]
+        [BEV image tokens] [language tokens]
 
         Parameters
         ----------
         bev_image        : PIL.Image or np.ndarray (H,W,3) RGB
         lang_description : str
-        low_state        : Tensor [B, >=4] — low UAV state (x,y,z,heading,...)
-        high_state       : Tensor [B, >=4] — high UAV state (x,y,z,heading,...)
         device           : torch.device
+        goal_offset      : optional (Δnorth, Δeast) metres from the high UAV's
+                           current position to the target — see
+                           ``build_processor_inputs``
 
         Returns
         -------
-        Tensor [B, T+2, hidden_size] — last_hidden_state of the truncated decoder
+        Tensor [B, S, hidden_size] — last_hidden_state of the truncated decoder
         """
-        low_state_token  = self.pose_token_proj(low_state).to(device)
-        high_state_token = self.pose_token_proj(high_state).to(device)
+        vlm_dtype = next(self.vlm.model.text_model.parameters()).dtype
 
-        proc                 = self.build_processor_inputs(bev_image, lang_description, device)
+        proc                 = self.build_processor_inputs(bev_image, lang_description, device, goal_offset)
         input_ids            = proc["input_ids"]
         pixel_values         = proc["pixel_values"]
         pixel_attention_mask = proc["pixel_attention_mask"]
-        attn_mask            = proc["attention_mask"]
+        attention_mask       = proc["attention_mask"]
 
         inputs_embeds = self.embed_tokens(input_ids)
         image_embeds  = self.embed_image(pixel_values, pixel_attention_mask)
@@ -236,19 +279,8 @@ class SmolVLM2Encoder(nn.Module):
             image_hidden_states=image_embeds,
         )
 
-        # Append state tokens — high first so low_state attends to high context
-        inputs_embeds = torch.cat(
-            [inputs_embeds, high_state_token, low_state_token],
-            dim=1,
-        )
-
-        attention_mask = torch.cat(
-            [attn_mask, torch.ones((attn_mask.size(0), 2), dtype=attn_mask.dtype, device=device)],
-            dim=1,
-        )
-
         lm_out = self.vlm.model.text_model(
-            inputs_embeds=inputs_embeds,
+            inputs_embeds=inputs_embeds.to(vlm_dtype),
             attention_mask=attention_mask,
             output_hidden_states=False,
             return_dict=True,

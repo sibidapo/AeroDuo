@@ -1,45 +1,45 @@
 """
-flow_matching.py — Flow-matching denoiser for Stage 1 AeroDuo training.
+flow_matching.py — GR00T-style flow-matching action head for Stage 1 AeroDuo.
 
-Architecture
-------------
-GR00T DiT-style interleaved bidirectional self-attention and cross-attention
-stack with AdaLN τ-modulation at every self-attn and cross-attn norm.
+Mirrors low_uav/model/lowuav_action_head.py (LowUAVActionHead) with one
+difference: there is no egocentric VLM stream on the high-UAV side, so the
+DiT cross-attends directly to z_graph [B, T, D_g] instead of FeatureMerger-
+fused VLM embeddings (no vl_embs, no FeatureMerger).
 
-τ convention: τ=0 → noise,  τ=1 → clean data
-  x_τ = (1 − τ)·noise + τ·clean
+Inputs:  z_graph, low_state, low_actions.
+
+Flow space is 5-dim (x, y, z, sin_h, cos_h): raw (x, y, z, heading_rad)
+states/actions are sin/cos-encoded inside the head (`_encode_heading`), so
+noise, the ODE path and the MSE loss are all wraparound-safe.  Decode heading
+downstream with atan2(sin_h, cos_h).
+
+τ convention: τ = 0 → noise, τ = 1 → clean data
+  τ ~ (1 − Beta(α, β)) · noise_s          (biased toward the noisy end)
+  x_τ = τ · clean + (1 − τ) · noise
   v_target = clean − noise
 
-Self-attention sequence (GR00T-style joint state+action):
-  state token   [1, D_g]   — low UAV pose projected + type tag (type 0)
-  action tokens [H, D_g]   — τ-conditioned encoded x_τ + horizon pos + type tag (type 1)
-  → concat      [1+H, D_g]
-
-Cross-attention context (graph only):
-  graph tokens  [T, D_g]   — z_graph from GraphEncoder + learned positional
-
-Per layer:
-  AdaLN → bidirectional self-attention over [state | actions] → residual
-  AdaLN → cross-attention (K,V = graph tokens) → residual
-  LayerNorm → FFN → residual
-
-Readout: slice the action positions [1:] from the joint sequence output.
-
-Output (DiT-style τ-modulated readout):
-  v_θ [H, action_dim] — predicted flow-matching vector field
-
-No batch dimension — trained one episode at a time.
-Internally reshapes to [1, S, D] for diffusers Attention compatibility.
+forward(z_graph, low_state, low_actions) samples noise and τ internally and
+returns the scalar flow-matching loss.  predict_action(z_graph, low_state)
+integrates the learned vector field from pure noise with a few Euler steps
+and returns [B, H, 5] actions.
 """
 
 from __future__ import annotations
 
+from typing import Optional
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-
+from diffusers import ConfigMixin, ModelMixin
+from diffusers.configuration_utils import register_to_config
 from diffusers.models.attention import Attention, FeedForward
-from diffusers.models.embeddings import TimestepEmbedding, Timesteps
+from diffusers.models.embeddings import (
+    SinusoidalPositionalEmbedding,
+    TimestepEmbedding,
+    Timesteps,
+)
+from torch.distributions import Beta
 
 try:
     from .config import AeroduoConfig
@@ -47,345 +47,540 @@ except ImportError:
     from config import AeroduoConfig
 
 
-# ── Timestep encoder ──────────────────────────────────────────────────────────
+class SinusoidalPositionalEncoding(nn.Module):
+    """Sinusoidal encoding (B, T, embedding_dim) given timesteps (B, T)."""
+
+    def __init__(self, embedding_dim):
+        super().__init__()
+        self.embedding_dim = embedding_dim
+
+    def forward(self, timesteps):
+        timesteps = timesteps.float()
+        B, T = timesteps.shape
+        device = timesteps.device
+        half_dim = self.embedding_dim // 2
+        exponent = -torch.arange(half_dim, dtype=torch.float, device=device) * (
+            torch.log(torch.tensor(10000.0)) / half_dim
+        )
+        freqs = timesteps.unsqueeze(-1) * exponent.exp()  # (B, T, half_dim)
+        return torch.cat([torch.sin(freqs), torch.cos(freqs)], dim=-1)
+
+
+def swish(x):
+    return x * torch.sigmoid(x)
+
 
 class TimestepEncoder(nn.Module):
-    """
-    Encode a discrete τ bucket → dense embedding.
-
-    Mirrors GR00T's TimestepEncoder: Timesteps (fixed sinusoidal) →
-    TimestepEmbedding (learned MLP).
-
-    timesteps : LongTensor [N]
-    returns   : [N, embedding_dim]
-    """
-
-    def __init__(self, embedding_dim: int) -> None:
+    def __init__(self, embedding_dim, compute_dtype=torch.float32):
         super().__init__()
+        self.compute_dtype = compute_dtype if compute_dtype is not None else torch.float32
         self.time_proj = Timesteps(num_channels=256, flip_sin_to_cos=True, downscale_freq_shift=1)
         self.timestep_embedder = TimestepEmbedding(in_channels=256, time_embed_dim=embedding_dim)
 
-    def forward(self, timesteps: torch.Tensor) -> torch.Tensor:
-        dtype = next(self.parameters()).dtype
-        timesteps_proj = self.time_proj(timesteps).to(dtype)
-        return self.timestep_embedder(timesteps_proj)   # [N, D]
+    def forward(self, timesteps):
+        timesteps_proj = self.time_proj(timesteps).to(self.compute_dtype)
+        return self.timestep_embedder(timesteps_proj)
 
-
-# ── AdaLayerNorm (GR00T version) ──────────────────────────────────────────────
 
 class AdaLayerNorm(nn.Module):
-    """
-    GR00T-style adaptive LayerNorm.  SiLU is applied to temb *before* the
-    linear (unlike the previous AeroDuo version which had a bare linear).
-    No zero-init on self.linear — stability comes from proj_out_2 zero-init.
-
-    x    : [N, S, D]   (batch-first sequence)
-    temb : [N, D]
-    returns: [N, S, D]
-    """
-
     def __init__(
         self,
         embedding_dim: int,
         norm_elementwise_affine: bool = False,
         norm_eps: float = 1e-5,
-    ) -> None:
+        chunk_dim: int = 0,
+    ):
         super().__init__()
-        self.silu   = nn.SiLU()
-        self.linear = nn.Linear(embedding_dim, 2 * embedding_dim)
-        self.norm   = nn.LayerNorm(embedding_dim, norm_eps, norm_elementwise_affine)
+        self.chunk_dim = chunk_dim
+        output_dim = embedding_dim * 2
+        self.silu = nn.SiLU()
+        self.linear = nn.Linear(embedding_dim, output_dim)
+        self.norm = nn.LayerNorm(output_dim // 2, norm_eps, norm_elementwise_affine)
 
-    def forward(self, x: torch.Tensor, temb: torch.Tensor) -> torch.Tensor:
-        # temb: [N, D] → [N, 2D]; scale/shift: [N, D] each
+    def forward(self, x: torch.Tensor, temb: Optional[torch.Tensor] = None) -> torch.Tensor:
         temb = self.linear(self.silu(temb))
-        scale, shift = temb.chunk(2, dim=-1)
-        # scale[:, None] broadcasts [N, D] → [N, 1, D] over seq dim S
+        scale, shift = temb.chunk(2, dim=1)
         return self.norm(x) * (1 + scale[:, None]) + shift[:, None]
 
 
-# ── ActionEncoder ─────────────────────────────────────────────────────────────
-
-class ActionEncoder(nn.Module):
-    """
-    τ-conditioned action encoder.  Plain-embodiment analog of GR00T's
-    MultiEmbodimentActionEncoder — the action tokens receive τ directly before
-    entering the denoiser stack, so low-τ (noisy) and high-τ (clean) tokens
-    are pre-conditioned.
-
-    actions : [H, action_dim]
-    temb    : [1, D]          (broadcast over H)
-    returns : [H, D]
-    """
-
-    def __init__(self, action_dim: int, hidden_size: int) -> None:
-        super().__init__()
-        self.W1 = nn.Linear(action_dim, hidden_size)
-        self.W2 = nn.Linear(2 * hidden_size, hidden_size)
-        self.W3 = nn.Linear(hidden_size, hidden_size)
-
-    def forward(self, actions: torch.Tensor, temb: torch.Tensor) -> torch.Tensor:
-        # actions: [H, action_dim] (single) or [B, H, action_dim] (batched)
-        # temb:    [1, D]          (single) or [B, D]             (batched)
-        a_emb = self.W1(actions)  # [H, D] or [B, H, D]
-        if a_emb.dim() == 2:
-            tau_broadcast = temb.expand(a_emb.shape[0], -1)              # [H, D]
-        else:
-            tau_broadcast = temb.unsqueeze(1).expand(-1, a_emb.shape[1], -1)  # [B, H, D]
-        x = torch.cat([a_emb, tau_broadcast], dim=-1)
-        x = F.silu(self.W2(x))
-        return self.W3(x)
-
-
-# ── FlowDenoiserBlock ─────────────────────────────────────────────────────────
-
-class FlowDenoiserBlock(nn.Module):
-    """
-    Single DiT-style transformer block for the flow-matching denoiser:
-
-        AdaLN → bidirectional self-attn      → residual
-        AdaLN → cross-attn (K,V = context)  → residual
-        LayerNorm → FFN                      → residual
-
-    All tensors are batch-first [1, S, D]; the dummy batch dim is managed
-    by FlowMatchingNetwork.forward.
-    """
-
+class BasicTransformerBlock(nn.Module):
     def __init__(
         self,
         dim: int,
         num_attention_heads: int,
         attention_head_dim: int,
-        cross_attention_dim: int,
-        dropout: float = 0.0,
-        ffn_mult: int = 4,
-        activation_fn: str = "gelu-approximate",
-        attention_bias: bool = True,
+        dropout=0.0,
+        cross_attention_dim: Optional[int] = None,
+        activation_fn: str = "geglu",
+        attention_bias: bool = False,
+        upcast_attention: bool = False,
+        norm_elementwise_affine: bool = True,
+        norm_type: str = "layer_norm",
         norm_eps: float = 1e-5,
-        norm_elementwise_affine: bool = False,
-    ) -> None:
+        final_dropout: bool = False,
+        positional_embeddings: Optional[str] = None,
+        num_positional_embeddings: Optional[int] = None,
+        ff_inner_dim: Optional[int] = None,
+        ff_bias: bool = True,
+        attention_out_bias: bool = True,
+    ):
         super().__init__()
+        self.norm_type = norm_type
+        self.posiitonal_embeddings = positional_embeddings
 
-        # 1. Self-attention (bidirectional)
-        self.norm1 = AdaLayerNorm(dim, norm_elementwise_affine, norm_eps)
+        if positional_embeddings and num_positional_embeddings is None:
+            raise ValueError(
+                "If `positional_embedding` type is defined, `num_positional_embeddings` must also be defined."
+            )
+
+        self.pos_embed = (
+            SinusoidalPositionalEmbedding(dim, max_seq_length=num_positional_embeddings)
+            if positional_embeddings == "sinusoidal"
+            else None
+        )
+
+        if norm_type == "ada_norm":
+            self.norm1 = AdaLayerNorm(dim)
+        else:
+            self.norm1 = nn.LayerNorm(dim, elementwise_affine=norm_elementwise_affine, eps=norm_eps)
+
         self.attn1 = Attention(
             query_dim=dim,
             heads=num_attention_heads,
-            dim_head=attention_head_dim,
             dropout=dropout,
             bias=attention_bias,
-            cross_attention_dim=None,
-        )
-
-        # 2. Cross-attention (Q = action tokens, K,V = z_graph + state)
-        self.norm2 = AdaLayerNorm(dim, norm_elementwise_affine, norm_eps)
-        self.attn2 = Attention(
-            query_dim=dim,
-            heads=num_attention_heads,
-            dim_head=attention_head_dim,
             cross_attention_dim=cross_attention_dim,
-            dropout=dropout,
-            bias=attention_bias,
+            upcast_attention=upcast_attention,
+            out_bias=attention_out_bias,
         )
 
-        # 3. FFN — plain LayerNorm (GR00T does not use AdaLN on norm3)
-        self.norm3 = nn.LayerNorm(dim, norm_eps, norm_elementwise_affine)
+        self.norm3 = nn.LayerNorm(dim, elementwise_affine=norm_elementwise_affine, eps=norm_eps)
         self.ff = FeedForward(
-            dim,
+            dim=dim,
             dropout=dropout,
             activation_fn=activation_fn,
-            inner_dim=ffn_mult * dim,
-            bias=True,
+            inner_dim=ff_inner_dim,
+            bias=ff_bias,
+        )
+        self.final_dropout = nn.Dropout(dropout) if final_dropout else None
+
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        attention_mask: Optional[torch.Tensor] = None,
+        encoder_hidden_states: Optional[torch.Tensor] = None,
+        encoder_attention_mask: Optional[torch.Tensor] = None,
+        temb: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+
+        if self.norm_type == "ada_norm":
+            norm_hidden_states = self.norm1(hidden_states, temb)
+        else:
+            norm_hidden_states = self.norm1(hidden_states)
+
+        if self.pos_embed is not None:
+            norm_hidden_states = self.pos_embed(norm_hidden_states)
+
+        attn_output = self.attn1(
+            norm_hidden_states,
+            encoder_hidden_states=encoder_hidden_states,
+            attention_mask=encoder_attention_mask,
+        )
+
+        if self.final_dropout:
+            attn_output = self.final_dropout(attn_output)
+
+        hidden_states = attn_output + hidden_states
+        if hidden_states.ndim == 4:
+            hidden_states = hidden_states.squeeze(1)
+
+        norm_hidden_states = self.norm3(hidden_states)
+        ff_output = self.ff(norm_hidden_states)
+
+        hidden_states = ff_output + hidden_states
+        if hidden_states.ndim == 4:
+            hidden_states = hidden_states.squeeze(1)
+        return hidden_states
+
+
+class DiT(ModelMixin, ConfigMixin):
+
+    @register_to_config
+    def __init__(
+        self,
+        num_attention_heads: int = 32,
+        attention_head_dim: int = 48,
+        output_dim: int = 1024,
+        num_layers: int = 16,
+        dropout: float = 0.1,
+        attention_bias: bool = True,
+        activation_fn: str = "gelu-approximate",
+        upcast_attention: bool = False,
+        norm_type: str = "ada_norm",
+        norm_elementwise_affine: bool = False,
+        norm_eps: float = 1e-5,
+        max_num_positional_embeddings: int = 512,
+        compute_dtype=torch.float32,
+        final_dropout: bool = True,
+        positional_embeddings: Optional[str] = "sinusoidal",
+        interleave_self_attention=False,
+        cross_attention_dim: Optional[int] = None,
+    ):
+        super().__init__()
+
+        self.inner_dim = attention_head_dim * num_attention_heads
+        self.gradient_checkpointing = False
+
+        _dtype_map = {"float32": torch.float32, "float16": torch.float16, "bfloat16": torch.bfloat16}
+        raw = getattr(self.config, "compute_dtype", torch.float32)
+        _compute_dtype = _dtype_map[raw] if isinstance(raw, str) else raw
+        self.timestep_encoder = TimestepEncoder(embedding_dim=self.inner_dim, compute_dtype=_compute_dtype)
+
+        all_blocks = []
+        for idx in range(self.config.num_layers):
+            use_self_attn = idx % 2 == 1 and interleave_self_attention
+            curr_cross_attention_dim = cross_attention_dim if not use_self_attn else None
+
+            all_blocks.append(
+                BasicTransformerBlock(
+                    dim=self.inner_dim,
+                    num_attention_heads=self.config.num_attention_heads,
+                    attention_head_dim=self.config.attention_head_dim,
+                    dropout=self.config.dropout,
+                    activation_fn=self.config.activation_fn,
+                    attention_bias=self.config.attention_bias,
+                    upcast_attention=self.config.upcast_attention,
+                    norm_type=norm_type,
+                    norm_elementwise_affine=self.config.norm_elementwise_affine,
+                    norm_eps=self.config.norm_eps,
+                    positional_embeddings=positional_embeddings,
+                    num_positional_embeddings=self.config.max_num_positional_embeddings,
+                    final_dropout=final_dropout,
+                    cross_attention_dim=curr_cross_attention_dim,
+                )
+            )
+        self.transformer_blocks = nn.ModuleList(all_blocks)
+
+        #Output blocks
+        self.norm_out = nn.LayerNorm(self.inner_dim, elementwise_affine=False, eps=1e-6)
+        self.proj_out_1 = nn.Linear(self.inner_dim, 2 * self.inner_dim)
+        self.proj_out_2 = nn.Linear(self.inner_dim, self.config.output_dim)
+        print(
+            "Total number of DiT parameters: ",
+            sum(p.numel() for p in self.parameters() if p.requires_grad),
         )
 
     def forward(
         self,
-        x:       torch.Tensor,   # [1, 1+H, D] — [state | action] tokens
-        context: torch.Tensor,   # [1, T, D]   — graph tokens (K, V only)
-        temb:    torch.Tensor,   # [1, D]       — τ embedding
-    ) -> torch.Tensor:           # [1, 1+H, D]
+        hidden_states: torch.Tensor,
+        encoder_hidden_states: torch.Tensor,
+        timestep: Optional[torch.Tensor],
+        return_all_hidden_states: bool = False,
+        encoder_attention_mask: Optional[torch.Tensor] = None,
+    ):
+        temb = self.timestep_encoder(timestep).to(hidden_states.dtype)
 
-        h = self.norm1(x, temb)
-        x = x + self.attn1(h)
+        hidden_states = hidden_states.contiguous()
+        encoder_hidden_states = encoder_hidden_states.contiguous()
 
-        h = self.norm2(x, temb)
-        x = x + self.attn2(h, encoder_hidden_states=context)
+        all_hidden_states = [hidden_states]
 
-        h = self.norm3(x)
-        x = x + self.ff(h)
+        for idx, block in enumerate(self.transformer_blocks):
+            if idx % 2 == 1 and self.config.interleave_self_attention:
+                hidden_states = block(
+                    hidden_states,
+                    attention_mask=None,
+                    encoder_hidden_states=None,
+                    encoder_attention_mask=None,
+                    temb=temb,
+                )
+            else:
+                hidden_states = block(
+                    hidden_states,
+                    attention_mask=None,
+                    encoder_hidden_states=encoder_hidden_states,
+                    encoder_attention_mask=encoder_attention_mask,
+                    temb=temb,
+                )
+            all_hidden_states.append(hidden_states)
 
-        return x
+        shift, scale = self.proj_out_1(F.silu(temb)).chunk(2, dim=1)
+        hidden_states = self.norm_out(hidden_states) * (1 + scale[:, None]) + shift[:, None]
+
+        if return_all_hidden_states:
+            return self.proj_out_2(hidden_states), all_hidden_states
+        return self.proj_out_2(hidden_states)
 
 
-# ── Pose projector ────────────────────────────────────────────────────────────
-
-class _PoseProjector(nn.Module):
-    """
-    Project raw low UAV pose [4] = (x, y, z, heading_rad) to a single
-    token [1, D] in the denoiser's embedding space.
-
-    Heading is encoded as (sin, cos) → [5] before the linear layer.
-    """
-
-    def __init__(self, D: int) -> None:
+class ActionEncoder(nn.Module):
+    def __init__(self, action_dim, hidden_size) -> None:
         super().__init__()
-        self.proj = nn.Linear(5, D)   # 5 = (x, y, z, sin_h, cos_h)
+        self.hidden_size = hidden_size
+        self.action_dim = action_dim
+        self.layer1 = nn.Linear(action_dim, hidden_size)
+        self.layer2 = nn.Linear(2 * hidden_size, hidden_size)
+        self.layer3 = nn.Linear(hidden_size, hidden_size)
+        self.pos_encoding = SinusoidalPositionalEncoding(hidden_size)
 
-    def forward(self, pose: torch.Tensor) -> torch.Tensor:
-        if pose.dim() == 1:
-            pose = pose.unsqueeze(0)              # [1, 4]
-        xyz   = pose[:, :3]                       # [1, 3]
-        sin_h = torch.sin(pose[:, 3:4])           # [1, 1]
-        cos_h = torch.cos(pose[:, 3:4])           # [1, 1]
-        enc   = torch.cat([xyz, sin_h, cos_h], dim=-1)   # [1, 5]
-        return self.proj(enc)                     # [1, D]
+    def forward(self, actions, timesteps):
+        """
+        actions: shape (B, T, action_dim)
+        timesteps: shape (B, ) -- a single scalar per batch item
+        returns: shape (B, T, hidden_size)
+        """
+        B, T, _ = actions.shape
+        if timesteps.dim() == 1 and timesteps.shape[0] == B:
+            timesteps = timesteps.unsqueeze(1).expand(-1, T)
+        else:
+            raise ValueError("Expected `timesteps` to have shape (B,)")
+
+        a_emb = self.layer1(actions)
+        tau_emb = self.pos_encoding(timesteps).to(dtype=a_emb.dtype)
+
+        x = swish(self.layer2(torch.cat([a_emb, tau_emb], dim=-1)))
+        return self.layer3(x)
 
 
-# ── FlowMatchingNetwork ───────────────────────────────────────────────────────
+class MLP(nn.Module):
+    def __init__(self, input_dim, hidden_dim, output_dim):
+        super().__init__()
+        self.layer1 = nn.Linear(input_dim, hidden_dim)
+        self.layer2 = nn.Linear(hidden_dim, output_dim)
+
+    def forward(self, x):
+        return self.layer2(F.relu(self.layer1(x)))
+
 
 class FlowMatchingNetwork(nn.Module):
     """
-    Flow-matching denoiser for low UAV trajectory prediction (Stage 1).
+    High-UAV flow-matching action head (Stage 1).
 
-    Predicts the vector field v_θ(x_τ, τ | z_graph, low_state).
+    Same architecture as LowUAVActionHead minus the FeatureMerger: the DiT
+    cross-attends directly to z_graph [B, T, D_g] (there is no egocentric
+    VLM stream on the high-UAV side).
 
-    τ convention: τ=0 → noise, τ=1 → clean data
-      x_τ = (1 − τ)·noise + τ·clean
-      v_target = clean − noise
-
-    No batch dimension — single episode at inference / training time.
-    Internally reshapes to [1, S, D] for diffusers Attention compatibility;
-    inputs and outputs remain 2D.
-
-    Parameters read from cfg
-    ------------------------
-    D_g                         : model dimension (256)
-    action_dim                  : trajectory state dim (4)
-    action_horizon              : denoising horizon H (8)
-    window_T                    : graph window T (5)
-    flow_matching_layers        : denoiser depth L (4)
-    flow_matching_heads         : attention heads (4)
-    flow_matching_ffn_mult      : FFN inner-dim multiplier (4)
-    num_timestep_buckets        : τ discretization (1000)
-    flow_matching_attention_bias: Q/K/V projection bias (True)
-    flow_matching_activation    : FFN activation (gelu-approximate)
+    forward(z_graph, low_state, low_actions)   → scalar loss (training)
+    predict_action(z_graph, low_state)         → [B, H, 5]   (inference)
     """
 
     def __init__(self, cfg: AeroduoConfig) -> None:
         super().__init__()
-        D          = cfg.D_g
-        H          = cfg.action_horizon
-        T          = cfg.window_T
-        L          = cfg.flow_matching_layers
-        heads      = cfg.flow_matching_heads
-        ffn_mult   = cfg.flow_matching_ffn_mult
-        head_dim   = D // heads
-        attn_bias  = getattr(cfg, "flow_matching_attention_bias", True)
-        activation = getattr(cfg, "flow_matching_activation", "gelu-approximate")
-        n_buckets  = getattr(cfg, "num_timestep_buckets", 1000)
+        self.cfg = cfg
+        self.num_timestep_buckets = cfg.num_timestep_buckets
+        self.noise_s = cfg.noise_s
+        self.num_inference_timesteps = cfg.num_inference_timesteps
+        self.action_horizon = cfg.action_horizon
+        self.action_dim = cfg.flow_action_dim   # 5 = (x, y, z, sin_h, cos_h)
 
-        assert D % heads == 0, f"D_g ({D}) must be divisible by flow_matching_heads ({heads})"
+        assert cfg.flow_input_emb_dim == cfg.flow_matching_heads * cfg.flow_matching_head_dim, (
+            f"flow_input_emb_dim ({cfg.flow_input_emb_dim}) must equal "
+            f"flow_matching_heads * flow_matching_head_dim "
+            f"({cfg.flow_matching_heads} * {cfg.flow_matching_head_dim})"
+        )
 
-        self._n_buckets = n_buckets
+        self.model = DiT(
+            num_attention_heads=cfg.flow_matching_heads,
+            attention_head_dim=cfg.flow_matching_head_dim,
+            output_dim=cfg.flow_output_dim,
+            num_layers=cfg.flow_matching_layers,
+            dropout=cfg.flow_matching_dropout,
+            attention_bias=cfg.flow_matching_attention_bias,
+            activation_fn=cfg.flow_matching_activation,
+            max_num_positional_embeddings=cfg.flow_max_num_positional_embeddings,
+            compute_dtype=torch.float32,
+            final_dropout=True,
+            positional_embeddings="sinusoidal",
+            interleave_self_attention=True,
+            cross_attention_dim=cfg.D_g,
+        )
 
-        # ── τ embedding ───────────────────────────────────────────────────────
-        self.timestep_encoder = TimestepEncoder(embedding_dim=D)
+        if cfg.flow_add_pos_embed:
+            self.position_embedding = nn.Embedding(cfg.flow_max_seq_len, cfg.flow_input_emb_dim)
+            nn.init.normal_(self.position_embedding.weight, mean=0.0, std=0.02)
 
-        # ── Action sequence ───────────────────────────────────────────────────
-        self.action_encoder = ActionEncoder(cfg.action_dim, D)
+        self.beta_dist = Beta(cfg.noise_beta_alpha, cfg.noise_beta_beta)
 
-        # ── Positional embeddings (slice-safe: [:T] and [:H]) ─────────────────
-        self.horizon_pos = nn.Parameter(torch.randn(H, D) * 0.02)   # [H, D]
-        self.graph_pos   = nn.Parameter(torch.randn(T, D) * 0.02)   # [T, D]
+        self.state_encoder = MLP(cfg.flow_state_dim, cfg.flow_hidden_dim, cfg.flow_input_emb_dim)
+        self.action_encoder = ActionEncoder(cfg.flow_action_dim, cfg.flow_input_emb_dim)
+        self.action_decoder = MLP(cfg.flow_output_dim, cfg.flow_hidden_dim, cfg.flow_action_dim)
 
-        # ── Token-type embedding: 0 = state token, 1 = action token ────────
-        self.type_embed = nn.Embedding(2, D)
+        # Probability of omitting the state token from the DiT input sequence
+        # during training (predict_action always keeps it).
+        self.state_dropout_p = cfg.state_dropout_p
 
-        # ── State projector ───────────────────────────────────────────────────
-        self.state_proj = _PoseProjector(D)
+    def _encode_heading(self, pose: torch.Tensor) -> torch.Tensor:
+        xyz = pose[..., :3]
+        sin_h = torch.sin(pose[..., 3]).unsqueeze(-1)
+        cos_h = torch.cos(pose[..., 3]).unsqueeze(-1)
+        return torch.cat([xyz, sin_h, cos_h], dim=-1)
 
-        # ── Denoiser blocks ───────────────────────────────────────────────────
-        self.blocks = nn.ModuleList([
-            FlowDenoiserBlock(
-                dim=D,
-                num_attention_heads=heads,
-                attention_head_dim=head_dim,
-                cross_attention_dim=D,
-                ffn_mult=ffn_mult,
-                activation_fn=activation,
-                attention_bias=attn_bias,
-            )
-            for _ in range(L)
-        ])
-
-        # ── DiT-style output head ─────────────────────────────────────────────
-        self.norm_out   = nn.LayerNorm(D, elementwise_affine=False, eps=1e-6)
-        self.proj_out_1 = nn.Linear(D, 2 * D)
-        self.proj_out_2 = nn.Linear(D, cfg.action_dim)
-
-        # Zero-init: v_pred ≈ 0 at init → L_flow ≈ E‖clean − noise‖² (finite)
-        nn.init.zeros_(self.proj_out_2.weight)
-        nn.init.zeros_(self.proj_out_2.bias)
-
-    # ── Forward ───────────────────────────────────────────────────────────────
+    def sample_time(self, batch_size, device, dtype):
+        return (1 - self.beta_dist.sample([batch_size]).to(device, dtype=dtype)) * self.noise_s
 
     def forward(
         self,
-        z_graph:   torch.Tensor,   # [T, D_g] or [B, T, D_g]
-        low_state: torch.Tensor,   # [4]       or [B, 4]
-        x_tau:     torch.Tensor,   # [H, 4]    or [B, H, 4]
-        tau:       torch.Tensor,   # scalar    or [B]
-    ) -> torch.Tensor:             # [H, action_dim] or [B, H, action_dim]
-        # Normalise to batched form; remember if we need to squeeze on return
-        unbatched = z_graph.dim() == 2
-        if unbatched:
-            z_graph   = z_graph.unsqueeze(0)
-            low_state = low_state.unsqueeze(0) if low_state.dim() == 1 else low_state
-            x_tau     = x_tau.unsqueeze(0)
-            tau       = tau.unsqueeze(0) if tau.dim() == 0 else tau
+        z_graph: torch.Tensor,     # [B, T_h, D_g]
+        low_state: torch.Tensor,   # [B, 4]
+        low_actions: torch.Tensor, # [B, T_l, 4]
+    ) -> torch.Tensor:
 
-        B      = z_graph.shape[0]
-        T      = z_graph.shape[1]
-        H      = x_tau.shape[1]
         device = z_graph.device
-        dtype  = next(self.parameters()).dtype
+        dtype = next(self.parameters()).dtype
 
-        z_graph   = z_graph.to(device=device, dtype=dtype)
+        z_graph = z_graph.to(device=device, dtype=dtype)
+
         low_state = low_state.to(device=device, dtype=dtype)
-        x_tau     = x_tau.to(device=device, dtype=dtype)
-        tau       = tau.to(device=device, dtype=dtype)
+        if low_state.dim() == 2:
+            low_state = low_state.view(low_state.shape[0], 1, -1)
+        assert low_state.dim() == 3, f"Expected low_state (B, 1, D), got {tuple(low_state.shape)}"
 
-        # ── 1. τ embedding: [B] → [B, D] ──────────────────────────────────────
-        t_bucket = (tau * self._n_buckets).long()   # [B]
-        temb     = self.timestep_encoder(t_bucket)  # [B, D]
+        low_actions = low_actions.to(device=device, dtype=dtype)
 
-        # ── 2. Cross-attention context: [B, T, D] ─────────────────────────────
-        context = z_graph + self.graph_pos[:T]   # broadcasts [T, D] → [B, T, D]
+        low_state   = self._encode_heading(low_state)    # [B, 1, 4] -> [B, 1, 5]
+        low_actions = self._encode_heading(low_actions)  # [B, T, 4] -> [B, T, 5]
 
-        # ── 3. Self-attention sequence: [state token | action tokens] ─────────
-        state_type  = torch.zeros(B,    dtype=torch.long, device=device)   # [B]
-        action_type = torch.ones(B, H,  dtype=torch.long, device=device)   # [B, H]
+        # =======================Step 1: Sample noise and timestep===============================
+        noise = torch.randn(low_actions.shape, device=low_actions.device, dtype=low_actions.dtype)
+        # Sample timestep t ∈ [0, 1]
+        t = self.sample_time(low_actions.shape[0], device=low_actions.device, dtype=low_actions.dtype)
+        t = t[:, None, None] # shape (B, 1, 1) for broadcast
 
-        # state_proj handles [B, 4] → [B, D]; add type emb and unsqueeze seq dim
-        state_tok = (
-            self.state_proj(low_state)          # [B, D]
-            + self.type_embed(state_type)        # [B, D]
-        ).unsqueeze(1)                           # [B, 1, D]
+        # ======================Step 2: Create noisy trajectory==================================
+        noisy_trajectory = t * low_actions + (1 - t) * noise
 
-        action_toks = (
-            self.action_encoder(x_tau, temb)     # [B, H, D]
-            + self.horizon_pos[:H]               # [H, D] broadcasts
-            + self.type_embed(action_type)       # [B, H, D]
+        # ======================Step 3: Compute ground truth velocity field
+        velocity = low_actions - noise
+
+        # ======================Step 4: Encode noisy trajectory==================================
+        t_discretized = (t[:, 0, 0] * self.num_timestep_buckets).long()
+        action_features = self.action_encoder(noisy_trajectory, t_discretized)
+
+        # ======================Step 5: Encode state=============================================
+        state_features = self.state_encoder(low_state)
+
+        # ======================Step 6: Add position embedding===================================
+        if self.cfg.flow_add_pos_embed:
+            pos_ids = torch.arange(action_features.shape[1], dtype=torch.long, device=device)
+            pos_embs = self.position_embedding(pos_ids).unsqueeze(0)
+            action_features = action_features + pos_embs
+
+        # =====================Step 7: Concatenate state and action feats========================
+        # State-conditioning dropout: with probability state_dropout_p the state
+        # token is left out of the sequence entirely, so denoising must recover
+        # the low-UAV state from z_graph (the window's low poses are fused into
+        # the place nodes).  The loss slice pred[:, -T_l:] is unaffected.
+        drop_state = (
+            self.training
+            and self.state_dropout_p > 0
+            and torch.rand(()).item() < self.state_dropout_p
         )
-        sa = torch.cat([state_tok, action_toks], dim=1)   # [B, 1+H, D]
+        if drop_state:
+            sa_embs = action_features
+        else:
+            sa_embs = torch.cat((state_features, action_features), dim=1)
 
-        # ── 4. Denoiser stack ─────────────────────────────────────────────────
-        for block in self.blocks:
-            sa = block(sa, context, temb)
+        # =====================Step 8: Flow matching forward pass================================
+        model_output = self.model(
+            hidden_states=sa_embs,
+            encoder_hidden_states=z_graph,
+            timestep=t_discretized,
+            return_all_hidden_states=False,
+        )
 
-        # ── 5. Slice action positions, then DiT-style readout ─────────────────
-        a = sa[:, 1:, :]   # [B, H, D]
-        shift, scale = self.proj_out_1(F.silu(temb)).chunk(2, dim=-1)  # [B, D] each
-        a = self.norm_out(a) * (1 + scale.unsqueeze(1)) + shift.unsqueeze(1)  # [B, H, D]
-        v_pred = self.proj_out_2(a)   # [B, H, action_dim]
+        pred = self.action_decoder(model_output)
 
-        return v_pred.squeeze(0) if unbatched else v_pred
+        # =====================Step 9: Extract predicted action samples==========================
+        pred_actions = pred[:, -low_actions.shape[1]:]
+
+        # =====================Step 10: Calculate loss -> velocity field prediction error========
+        loss = F.mse_loss(pred_actions, velocity)
+
+        return loss
+
+    @torch.no_grad()
+    def predict_action(
+        self,
+        z_graph: torch.Tensor,
+        low_state: torch.Tensor,
+    ) -> torch.Tensor:
+        """
+        Generate actions from random noise using the flow matching diffusion process.
+
+        Args:
+            z_graph: shared graph embeddings from high UAV [B, T_h, D_g]
+            low_state: low UAV state [B, 4] -> [x, y, z, heading]
+
+        Returns:
+            action_pred: [B, action_horizon, 5] = (x, y, z, sin_h, cos_h);
+            decode heading with atan2(sin_h, cos_h).
+        """
+        # =================Step 1: Initialize actions from pure noise==================================
+        batch_size = z_graph.shape[0]
+        device = z_graph.device
+        dtype = next(self.parameters()).dtype
+
+        actions = torch.randn(
+            size=(batch_size, self.action_horizon, self.action_dim),
+            dtype=dtype,
+            device=device,
+        )
+
+        num_steps = self.num_inference_timesteps
+        dt = 1.0 / num_steps
+
+        # =================Step 2: Prepare all input features ========================================
+        z_graph = z_graph.to(device=device, dtype=dtype)
+
+        low_state   = low_state.to(device=device, dtype=dtype)
+        if low_state.dim() == 2:  # [B, 4] -> [B, 1, 4]
+            low_state = low_state.view(low_state.shape[0], 1, -1)
+        assert low_state.dim() == 3, \
+            f"Expected low_state shape [B, 1, 4], got {tuple(low_state.shape)}"
+
+        low_state = self._encode_heading(low_state) # [B, 1, 4] -> [B, 1, 5]
+        state_features = self.state_encoder(low_state)
+
+        # =================Step 3: ODE integration loop =============================================
+        for t in range(num_steps):
+            # =============Step 3a: Compute current continuous timestep ==============================
+            t_cont = t / float(num_steps)
+            t_discretized = int(t_cont * self.num_timestep_buckets)
+
+            # =============Step 3b: Encode current action sequence ==================================
+            timestep_tensor = torch.full(
+                size=(batch_size,), fill_value=t_discretized, device=device
+            )
+            action_features = self.action_encoder(actions, timestep_tensor)
+
+            # =============Step 3c: Add position embedding ==========================================
+            if self.cfg.flow_add_pos_embed:
+                pos_ids = torch.arange(action_features.shape[1], dtype=torch.long, device=device)
+                pos_embs = self.position_embedding(pos_ids).unsqueeze(0)
+                action_features = action_features + pos_embs
+
+            # =============Step 3d: Concatenat state and action feats ===============================
+            sa_embs = torch.cat((state_features, action_features), dim=1)
+
+            # ============Step 3e: Model forward pass (predicts action samples) ======================
+            model_output = self.model(
+                hidden_states=sa_embs,
+                encoder_hidden_states=z_graph,
+                timestep=timestep_tensor,
+            )
+            pred = self.action_decoder(model_output)
+
+            # ============Step 3f: Extract predicted action samples ================================
+            pred_velocity = pred[:, -self.action_horizon:]
+
+            # ============Step 3h: Euler integration ==============================================
+            actions = actions + (dt * pred_velocity)
+
+        return actions
+
+    @property
+    def device(self):
+        return next(iter(self.parameters())).device
+
+    @property
+    def dtype(self):
+        return next(iter(self.parameters())).dtype

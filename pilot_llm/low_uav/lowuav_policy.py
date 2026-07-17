@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from typing import Dict, List, Optional
+import gc
+import math
+from typing import Dict, List, Optional, Sequence
 
 import torch
 import torch.nn as nn
@@ -12,6 +14,53 @@ try:
 except ImportError:
     from config.lowuavconfig import LowUAVConfig
     from model.lowuav_action_head import LowUAVActionHead
+
+
+# ── Fuzzy egocentric goal verbalisation ────────────────────────────────────────
+#
+# Counterpart of high_uav.smolvlm2_encoder.fuzzy_goal_phrase, but expressed in
+# the low UAV's body frame: the front camera looks along the heading, so a
+# compass cue ("to the south-west") is useless — the cue must say where the
+# target lies relative to where the drone is FACING.
+#
+# Hal-13k frame (validated against BEV flow and the dataset's own priors):
+#   +x = north, +y = east; heading = yaw radians from north toward east
+#   (verified: motion bearing atan2(Δeast, Δnorth) matches rel_state[:, 3]).
+# Relative bearing = wrap(atan2(Δeast, Δnorth) − heading); positive → right.
+
+_EGO_SECTORS = [
+    "straight ahead of you",
+    "ahead of you and to the right",
+    "to your right",
+    "behind you and to the right",
+    "directly behind you",
+    "behind you and to the left",
+    "to your left",
+    "ahead of you and to the left",
+]
+
+
+def fuzzy_ego_goal_phrase(d_north: float, d_east: float, heading: float) -> str:
+    """
+    Verbalise a goal offset (Δnorth, Δeast in metres) as a fuzzy cue relative
+    to the low UAV's heading, e.g. "ahead of you and to the left, close by".
+    Deliberately coarse: 8 direction sectors × 4 distance buckets, so the
+    target location is never revealed exactly.
+    """
+    rel = math.atan2(d_east, d_north) - heading
+    rel = (rel + math.pi) % (2.0 * math.pi) - math.pi  # wrap to (-π, π]
+    sector = _EGO_SECTORS[int(((math.degrees(rel) + 22.5) % 360.0) // 45.0)]
+
+    dist = math.hypot(d_north, d_east)
+    if dist < 30.0:
+        qual = "very close"
+    elif dist < 80.0:
+        qual = "close by"
+    elif dist < 160.0:
+        qual = "a moderate distance away"
+    else:
+        qual = "far away"
+    return f"{sector}, {qual}"
 
 
 class LowVLMEncoder(nn.Module):
@@ -39,11 +88,18 @@ class LowVLMEncoder(nn.Module):
         for param in self.vlm.parameters():
             param.requires_grad_(False)
 
-        self._lm_layers = self.vlm.model.text_model.layers
-        n = len(self._lm_layers)
+        # Keep the full layer list in a local only: storing it on self would
+        # register all 24 layers as a submodule and pin the truncated upper
+        # half (~half the decoder) in GPU memory for the whole run.
+        full_layers = self.vlm.model.text_model.layers
+        n = len(full_layers)
         cutoff = cfg.vlm_layer_cutoff if cfg.vlm_layer_cutoff is not None else n // 2
         self.vlm_layer_cutoff = cutoff
-        self.vlm.model.text_model.layers = self._lm_layers[:cutoff]
+        self.vlm.model.text_model.layers = full_layers[:cutoff]
+        del full_layers
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
         self.hidden_size = self.vlm.config.text_config.hidden_size
 
@@ -68,12 +124,31 @@ class LowVLMEncoder(nn.Module):
         front_image,
         language_text: str,
         device: torch.device = None,
+        goal_offset: Optional[Sequence[float]] = None,
+        heading: Optional[float] = None,
     ) -> dict:
+        """
+        Build SmolVLM2 processor inputs for one front-camera frame.
+
+        goal_offset : optional (Δnorth, Δeast) in metres from the low UAV's
+            *current* position to the target.  When given together with
+            ``heading`` (yaw radians, north-referenced), the prompt carries a
+            fuzzy heading-relative direction cue; otherwise the prompt has no
+            direction line (target description only).
+        """
         device = device or torch.device(self.cfg.device)
         text_parts = language_text.split(
             "The description of the target and its surrounding is shown below."
         )
         target_text = text_parts[-1].strip()
+
+        if goal_offset is not None and heading is not None:
+            direction_line = (
+                "Relative to where you are facing, the target is "
+                f"{fuzzy_ego_goal_phrase(float(goal_offset[0]), float(goal_offset[1]), float(heading))}.\n"
+            )
+        else:
+            direction_line = ""
 
         messages = [
             {
@@ -85,6 +160,7 @@ class LowVLMEncoder(nn.Module):
                         "text": (
                             "Front-facing camera from a low-altitude UAV navigating to a target.\n"
                             f"Target and surroundings: {target_text}\n"
+                            f"{direction_line}"
                             "Is the target visible? Identify environment features ahead "
                             "that match the target's surroundings, and any clear path toward them."
                         ),
@@ -102,10 +178,12 @@ class LowVLMEncoder(nn.Module):
         front_image,
         lang_description: str,
         device: torch.device = None,
+        goal_offset: Optional[Sequence[float]] = None,
+        heading: Optional[float] = None,
     ) -> torch.Tensor:
         device = device or torch.device(self.cfg.device)
 
-        proc = self.build_processor_inputs(front_image, lang_description, device)
+        proc = self.build_processor_inputs(front_image, lang_description, device, goal_offset, heading)
         input_ids = proc["input_ids"]
         pixel_values = proc["pixel_values"]
         pixel_attention_mask = proc["pixel_attention_mask"]
@@ -135,18 +213,22 @@ class LowUAVPolicy(nn.Module):
     Stage 2 policy: frozen high-UAV graph encoder + frozen egocentric VLM + trainable action head.
 
     Frozen (not registered as nn.Module submodules):
-        high_uav_policy  — Stage 1 AeroDuoPolicy; called via encode_graph() under no_grad
+        high_uav_policy  — Stage 1 AeroDuoPolicy; called via get_graph() (no_grad inside).
+                           May be None when cfg.use_zgraph=False (standalone low-UAV:
+                           the action head conditions on the VLM embeddings alone).
 
     Frozen (registered nn.Module, zero trainable params):
         vlm_encoder      — LowVLMEncoder (SmolVLM2 backbone truncated at vlm_layer_cutoff)
 
     Trainable:
-        action_head      — FeatureMerger + DiT + state/action encoders + decoder
+        action_head      — [FeatureMerger +] DiT + state/action encoders + decoder
     """
 
-    def __init__(self, cfg: LowUAVConfig, high_uav_policy: nn.Module) -> None:
+    def __init__(self, cfg: LowUAVConfig, high_uav_policy: Optional[nn.Module] = None) -> None:
         super().__init__()
         self.cfg = cfg
+        if cfg.use_zgraph and high_uav_policy is None:
+            raise ValueError("cfg.use_zgraph=True requires a Stage 1 high_uav_policy")
         # Bypass nn.Module.__setattr__ so PyTorch never registers Stage 1 as a submodule.
         # Keeps its weights out of parameters(), state_dict(), and DDP sync.
         object.__setattr__(self, '_high_uav_policy', high_uav_policy)
@@ -159,12 +241,17 @@ class LowUAVPolicy(nn.Module):
         front_images: List,
         instructions: List[str],
         device: torch.device,
+        low_goal_offsets: Optional[List] = None,   # [B] × ([2] or None) — (Δnorth, Δeast) m
+        headings: Optional[torch.Tensor] = None,   # [B] — yaw radians (north-referenced)
     ) -> torch.Tensor:
         """Run LowVLMEncoder over a batch; returns [B, L, H]."""
+        if low_goal_offsets is None:
+            low_goal_offsets = [None] * len(front_images)
         embs = []
-        for img, instr in zip(front_images, instructions):
+        for b, (img, instr, off) in enumerate(zip(front_images, instructions, low_goal_offsets)):
+            heading = float(headings[b]) if (headings is not None and off is not None) else None
             with torch.no_grad():
-                emb = self.vlm_encoder(img, instr, device)  # [1, L, H]
+                emb = self.vlm_encoder(img, instr, device, goal_offset=off, heading=heading)  # [1, L, H]
             embs.append(emb.squeeze(0))
         return torch.stack(embs)  # [B, L, H]
 
@@ -178,24 +265,33 @@ class LowUAVPolicy(nn.Module):
         instruction: List[str],
         device: torch.device,
         low_uav_traj_target: Optional[torch.Tensor] = None,
+        goal_offsets: Optional[List] = None,   # [B] × ([T, 2] or None) — (Δnorth, Δeast) m, high-UAV frame
+        low_goal_offset: Optional[List] = None,  # [B] × ([2] or None) — (Δnorth, Δeast) m, low-UAV frame at t_end
     ) -> Dict[str, torch.Tensor]:
         """
         Training (provide low_uav_traj_target):
-            → {"loss": scalar, "z_graph": [B, T, D_g]}
+            → {"loss": scalar, "z_graph": [B, T, D_g] (None when use_zgraph=False)}
 
         Inference (omit low_uav_traj_target):
-            → {"actions": [B, H, 5], "z_graph": [B, T, D_g]}
+            → {"actions": [B, H, 5], "z_graph": [B, T, D_g] (None when use_zgraph=False)}
         """
-        with torch.no_grad():
-            z_graph = self._high_uav_policy.encode_graph(
+        if self.cfg.use_zgraph:
+            z_graph = self._high_uav_policy.get_graph(
                 bev_images=bev_images,
                 high_uav_poses=high_uav_poses,
                 low_uav_poses_window=low_uav_poses_window,
                 instruction=instruction,
                 device=device,
+                goal_offsets=goal_offsets,
             )  # [B, T, D_g]
+        else:
+            z_graph = None
 
-        vl_embs = self._encode_vlm_batch(low_uav_front_image, instruction, device)  # [B, L, H]
+        vl_embs = self._encode_vlm_batch(
+            low_uav_front_image, instruction, device,
+            low_goal_offsets=low_goal_offset,
+            headings=low_uav_pose_current[:, 3],  # raw yaw radians (never normalized)
+        )  # [B, L, H]
 
         out: Dict[str, torch.Tensor] = {"z_graph": z_graph}
 
@@ -210,6 +306,41 @@ class LowUAVPolicy(nn.Module):
             low_actions=low_uav_traj_target,
         )
         return out
+
+    @torch.no_grad()
+    def get_action(
+        self,
+        bev_images,
+        low_uav_front_image: List,
+        high_uav_poses: torch.Tensor,
+        low_uav_poses_window: torch.Tensor,
+        low_uav_pose_current: torch.Tensor,
+        instruction: List[str],
+        device: torch.device,
+        goal_offsets: Optional[List] = None,   # [B] × ([T, 2] or None) — (Δnorth, Δeast) m, high-UAV frame
+        low_goal_offset: Optional[List] = None,  # [B] × ([2] or None) — (Δnorth, Δeast) m, low-UAV frame
+    ) -> torch.Tensor:
+        """
+        Inference-only action prediction.  Returns [B, H, 5] action tensor
+        ([x, y, z, sin_h, cos_h]) without building a loss or returning auxiliary outputs.
+        """
+        if self.cfg.use_zgraph:
+            z_graph = self._high_uav_policy.get_graph(
+                bev_images=bev_images,
+                high_uav_poses=high_uav_poses,
+                low_uav_poses_window=low_uav_poses_window,
+                instruction=instruction,
+                device=device,
+                goal_offsets=goal_offsets,
+            )  # [B, T, D_g]
+        else:
+            z_graph = None
+        vl_embs = self._encode_vlm_batch(
+            low_uav_front_image, instruction, device,
+            low_goal_offsets=low_goal_offset,
+            headings=low_uav_pose_current[:, 3],
+        )  # [B, L, H]
+        return self.action_head.predict_action(vl_embs, z_graph, low_uav_pose_current)
 
     def trainable_state_dict(self) -> Dict[str, torch.Tensor]:
         sd: Dict[str, torch.Tensor] = {}

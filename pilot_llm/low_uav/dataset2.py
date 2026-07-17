@@ -1,19 +1,17 @@
 """
-dataset.py — AeroduoDataset for Stage 1 training.
+dataset2.py — AeroduoDataset for Stage 2 training.
 
 One training sample = a sliding window of T consecutive BEV frames (high-UAV
 context) aligned with H subsequent low-UAV trajectory steps (flow-matching
-supervision target).
+supervision target), plus the low UAV's front-camera frame at t_end.
 
 Data layout (Hal-13k):
     <dataset_root>/<town>/<episode_id>/
         bevcamera/                         <- BEV PNG frames (high UAV), sorted by name
-        high_uav_traj.json                 <- {normalized_state: [[x,y,z,heading], ...],
-                                               rel_state: unnormalized, relative to start}
+        frontcamera/                       <- front-camera PNG frames (low UAV), sorted by name; len == N_low
+        high_uav_traj.json                 <- {normalized_state: [[x,y,z,heading], ...]}
         low_uav_traj.json                  <- {normalized_state: [[x,y,z,heading], ...]}
         object_description_with_help.json  <- [instruction_string]
-        mark.json                          <- {start, end, ...} — goal position for the
-                                              per-frame fuzzy directional prompt cue
 
 Sampling strategy:
     N_high = len(bevcamera frames) = len(high_uav_traj.normalized_state)
@@ -59,12 +57,15 @@ _IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg"}
 class _EpisodeMeta:
     episode_path: Path
     instruction: str
-    high_poses: np.ndarray       # [N_high, 4] — normalized_state (x,y,z,heading)
-    low_poses: np.ndarray        # [N_low,  4] — normalized_state
-    bev_frame_paths: List[Path]  # sorted; len == N_high; positional index == traj index
-    n_overlap: int               # min(N_high, N_low)
+    high_poses: np.ndarray        # [N_high, 4] — normalized_state (x,y,z,heading)
+    low_poses: np.ndarray         # [N_low,  4] — normalized_state
+    bev_frame_paths: List[Path]   # sorted; len == N_high; positional index == traj index
+    front_frame_paths: List[Path] # sorted; len == N_low;  positional index == low traj index
+    n_overlap: int                # min(N_high, N_low)
     goal_offsets: Optional[np.ndarray] = None  # [N_high, 2] — (Δnorth, Δeast) m,
                                                # target minus high-UAV position per frame
+    low_goal_offsets: Optional[np.ndarray] = None  # [N_low, 2] — (Δnorth, Δeast) m,
+                                                   # target minus low-UAV position per frame
 
 
 # ── Dataset ───────────────────────────────────────────────────────────────────
@@ -183,15 +184,17 @@ class AeroduoDataset(Dataset):
             # start, in the same frame as mark.json (+x = north, +y = east),
             # so goal − current = (end − start) − rel_state[t].
             goal_offsets: Optional[np.ndarray] = None
+            goal_xy: Optional[np.ndarray] = None
             mark_path = ep_dir / "mark.json"
-            rel_state = np.array(high_data.get("rel_state", []), dtype=np.float32)
-            if mark_path.exists() and len(rel_state) == len(high_poses):
+            if mark_path.exists():
                 with mark_path.open("r", encoding="utf-8") as f:
                     mark = json.load(f)
                 goal_xy = (
                     np.array(mark["end"][:2], dtype=np.float32)
                     - np.array(mark["start"][:2], dtype=np.float32)
                 )
+            rel_state = np.array(high_data.get("rel_state", []), dtype=np.float32)
+            if goal_xy is not None and len(rel_state) == len(high_poses):
                 goal_offsets = goal_xy[None, :] - rel_state[:, :2]  # [N_high, 2]
 
             # ── Low UAV trajectory ────────────────────────────────────────────
@@ -199,6 +202,14 @@ class AeroduoDataset(Dataset):
             with low_traj_path.open("r", encoding="utf-8") as f:
                 low_data = json.load(f)
             low_poses = np.array(low_data["normalized_state"], dtype=np.float32)   # [N_low, 4]
+
+            # Same mark-based construction in the low-UAV frame: both UAVs share
+            # the mark.json start, so goal − current = (end − start) − rel_state[t]
+            # (verified: this offset shrinks to <0.5 m at episode end).
+            low_goal_offsets: Optional[np.ndarray] = None
+            low_rel_state = np.array(low_data.get("rel_state", []), dtype=np.float32)
+            if goal_xy is not None and len(low_rel_state) == len(low_poses):
+                low_goal_offsets = goal_xy[None, :] - low_rel_state[:, :2]  # [N_low, 2]
 
             # ── BEV frame paths (positionally indexed — don't parse filenames) ─
             bev_dir = ep_dir / "bevcamera"
@@ -215,6 +226,20 @@ class AeroduoDataset(Dataset):
                 )
                 return None
 
+            # ── Front-camera frame paths (low UAV, positionally indexed) ─────
+            front_dir = ep_dir / "frontcamera"
+            front_frame_paths = sorted(
+                p for p in front_dir.iterdir()
+                if p.is_file() and p.suffix.lower() in _IMAGE_SUFFIXES
+            )
+
+            if len(front_frame_paths) != len(low_poses):
+                logger.warning(
+                    "Frame/traj mismatch in %s: %d front-cam files vs %d low traj entries — skipping",
+                    ep_dir, len(front_frame_paths), len(low_poses),
+                )
+                return None
+
             n_overlap = min(len(high_poses), len(low_poses))
 
             return _EpisodeMeta(
@@ -223,8 +248,10 @@ class AeroduoDataset(Dataset):
                 high_poses=high_poses,
                 low_poses=low_poses,
                 bev_frame_paths=bev_frame_paths,
+                front_frame_paths=front_frame_paths,
                 n_overlap=n_overlap,
                 goal_offsets=goal_offsets,
+                low_goal_offsets=low_goal_offsets,
             )
 
         except Exception as exc:
@@ -268,23 +295,39 @@ class AeroduoDataset(Dataset):
         low_uav_pose_current = low_uav_poses_window[-1].copy()                    # [4]
         low_uav_traj_target  = ep.low_poses[t_end + 1 : t_end + 1 + H].copy()   # [H, 4]
 
+        # ── Low UAV front-camera frame at t_end ───────────────────────────────
+        # Positionally aligned with low_uav_pose_current: the low UAV's forward-
+        # facing view at the current timestep, used as visual conditioning in
+        # Stage 2.
+        low_uav_front_image = Image.open(ep.front_frame_paths[t_end]).convert("RGB")
+
         # ── Goal offsets for the BEV window: [T, 2] or None ────────────────────
         goal_offsets = (
             ep.goal_offsets[window_start : t_end + 1].copy()
             if ep.goal_offsets is not None else None
         )
 
+        # ── Low-UAV goal offset at t_end: [2] or None ──────────────────────────
+        # Aligned with low_uav_front_image / low_uav_pose_current; used for the
+        # egocentric fuzzy direction cue in the low-UAV VLM prompt.
+        low_goal_offset = (
+            ep.low_goal_offsets[t_end].copy()
+            if ep.low_goal_offsets is not None else None
+        )
+
         return {
-            "bev_images":            bev_images,          # List[PIL.Image], length T
-            "high_uav_poses":        high_uav_poses,       # np.ndarray [T, 4]
-            "low_uav_poses_window":  low_uav_poses_window, # np.ndarray [T, 4]  ← per-timestep low state for VLM
-            "low_uav_pose_current":  low_uav_pose_current, # np.ndarray [4]     ← low_uav_poses_window[-1], for flow matching
-            "low_uav_traj_target":   low_uav_traj_target,  # np.ndarray [H, 4]  ← flow-matching supervision target
-            "goal_offsets":          goal_offsets,         # np.ndarray [T, 2] or None ← (Δnorth, Δeast) m per frame
-            "instruction":           ep.instruction,        # str
-            "episode_path":          str(ep.episode_path),  # str
-            "window_start":          window_start,          # int
-            "t_end":                 t_end,                 # int
+            "bev_images":            bev_images,           # List[PIL.Image], length T
+            "low_uav_front_image":   low_uav_front_image,  # PIL.Image — front cam at t_end
+            "high_uav_poses":        high_uav_poses,        # np.ndarray [T, 4]
+            "low_uav_poses_window":  low_uav_poses_window,  # np.ndarray [T, 4]  ← per-timestep low state for VLM
+            "low_uav_pose_current":  low_uav_pose_current,  # np.ndarray [4]     ← low_uav_poses_window[-1], for flow matching
+            "low_uav_traj_target":   low_uav_traj_target,   # np.ndarray [H, 4]  ← flow-matching supervision target
+            "goal_offsets":          goal_offsets,          # np.ndarray [T, 2] or None ← (Δnorth, Δeast) m per frame
+            "low_goal_offset":       low_goal_offset,       # np.ndarray [2] or None    ← (Δnorth, Δeast) m at t_end, low-UAV frame
+            "instruction":           ep.instruction,         # str
+            "episode_path":          str(ep.episode_path),   # str
+            "window_start":          window_start,           # int
+            "t_end":                 t_end,                  # int
         }
 
 
@@ -301,19 +344,22 @@ def collate_fn(batch: List[Dict[str, Any]]) -> Dict[str, Any]:
     -------
     dict with keys:
         bev_images            : List[List[PIL.Image]]  shape [B][T]
+        low_uav_front_image   : List[PIL.Image]        length B — front cam at t_end per sample
         high_uav_poses        : Tensor [B, T, 4]
         low_uav_poses_window  : Tensor [B, T, 4]
         low_uav_pose_current  : Tensor [B, 4]
         low_uav_traj_target   : Tensor [B, H, 4]
         goal_offsets          : List[Tensor [T, 2] or None]  length B
+        low_goal_offset       : List[Tensor [2] or None]     length B
         instruction           : List[str]  length B
         episode_path          : List[str]  length B
         window_start          : List[int]  length B
         t_end                 : List[int]  length B
     """
     return {
-        # Images stay as nested Python lists — SmolVLM2Encoder handles PIL directly
-        "bev_images": [s["bev_images"] for s in batch],          # [B][T]
+        # Images stay as Python lists — SmolVLM2Encoder handles PIL directly
+        "bev_images":           [s["bev_images"]          for s in batch],  # [B][T]
+        "low_uav_front_image":  [s["low_uav_front_image"] for s in batch],  # [B]
 
         # Pose tensors stacked along a leading batch dim
         "high_uav_poses": torch.stack([
@@ -340,6 +386,11 @@ def collate_fn(batch: List[Dict[str, Any]]) -> Dict[str, Any]:
             if s["goal_offsets"] is not None else None
             for s in batch
         ],                                                         # [B] × ([T, 2] or None)
+        "low_goal_offset": [
+            torch.from_numpy(np.asarray(s["low_goal_offset"], dtype=np.float32))
+            if s["low_goal_offset"] is not None else None
+            for s in batch
+        ],                                                         # [B] × ([2] or None)
 
         # Metadata — Python lists
         "instruction":  [s["instruction"]  for s in batch],

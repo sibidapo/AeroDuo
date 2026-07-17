@@ -24,10 +24,12 @@ BEVEncoder  (frozen, not an nn.Module)
   → detections_list List[List[dict]]
 
 SmolVLM2Encoder  (frozen, nn.Module, @torch.no_grad inside forward)
-    VLM(BEV image, instruction, high_pose, low_pose)
+    VLM(BEV image, instruction)   — image + text only, no pose tokens
   → hidden_states [T, S, 2048]
 
-PositionVertexBuilder  (trainable — PerceiverIO + output_query)
+PositionVertexBuilder  (trainable — PoseFeatureMerger + PerceiverIO + output_query)
+    hidden_states cross-attend over projected high/low UAV pose tokens,
+    then PerceiverIO pools the fused sequence
   → place_nodes [T, D_g]
 
 ObservationVertexBuilder  (trainable — obs_projector)
@@ -37,10 +39,11 @@ ObservationVertexBuilder  (trainable — obs_projector)
 GraphEncoder  (trainable — HGTConv × 3)
   → z_graph [T, D_g]
 
-FlowMatchingNetwork  (trainable, Stage 1 only)
-    z_graph + low_state + x_τ + τ
-  → v_pred [H, action_dim]
-  → L_flow = MSE(v_pred, v_target)
+FlowMatchingNetwork  (trainable, Stage 1 only — GR00T-style, mirrors
+                      low_uav LowUAVActionHead; DiT cross-attends to z_graph)
+    z_graph + low_state + low_actions
+  → noise + τ ~ (1 − Beta(α, β)) · noise_s sampled inside the head
+  → L_flow = MSE(v_pred, clean − noise) in (x, y, z, sin_h, cos_h) space
 
 Trainable / Frozen split
 ------------------------
@@ -49,16 +52,17 @@ Frozen (excluded from optimizer and trainable_state_dict):
     SmolVLM2Encoder
 
 Trainable:
-    place_node_builder  PerceiverIO + output_query
+    place_node_builder  PoseFeatureMerger + PerceiverIO + output_query
     obs_vertex_builder  obs_projector (Linear + LayerNorm)
     graph_encoder       HGTConv layers + LayerNorms
     flow_net            full DiT denoiser
 
-τ convention (flow matching)
------------------------------
+τ convention (flow matching — sampled inside FlowMatchingNetwork)
+-----------------------------------------------------------------
     τ = 0  →  pure noise
     τ = 1  →  clean data
-    x_τ = (1 − τ) · noise + τ · clean
+    τ ~ (1 − Beta(α, β)) · noise_s
+    x_τ = τ · clean + (1 − τ) · noise
     v_target = clean − noise
 """
 
@@ -69,7 +73,6 @@ from typing import Dict, List, Optional
 import numpy as np
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
 try:
     from .config import AeroduoConfig
@@ -127,18 +130,12 @@ class AeroDuoPolicy(nn.Module):
         # Stored as a plain attribute so PyTorch never registers these weights.
         self.bev_encoder = BEVEncoder(sam2_predictor, grounding_model)
 
-        # ── Frozen: SmolVLM2 body + pose token projectors (nn.Module) ─────────
+        # ── Frozen: SmolVLM2 body (nn.Module) — image + text only ─────────────
         self.vlm_encoder = SmolVLM2Encoder(cfg)
 
-        # ── Trainable: PerceiverIO compression [T, S, 2048] → [T, D_g] ────────
-        self.place_node_builder = PositionVertexBuilder(
-            smolvlm2_hidden_dim=cfg.smolvlm2_hidden_dim,
-            D_g=cfg.D_g,
-            perceiver_M=cfg.perceiver_M,
-            perceiver_D_latent=cfg.perceiver_D_latent,
-            perceiver_depth=cfg.perceiver_depth,
-            perceiver_n_heads=cfg.perceiver_n_heads,
-        )
+        # ── Trainable: pose cross-attention fusion + PerceiverIO compression ──
+        # [T, S, 2048] + high/low poses → [T, D_g]
+        self.place_node_builder = PositionVertexBuilder(cfg)
 
         # ── Trainable: SAM2 mask-pool → graph observation node features ────────
         self.obs_vertex_builder = ObservationVertexBuilder(cfg)
@@ -186,6 +183,7 @@ class AeroDuoPolicy(nn.Module):
         low_uav_poses_window: torch.Tensor,      # [B, T, 4] or [T, 4]
         instruction,                             # List[str] length B or str
         device:               torch.device,
+        goal_offsets:         Optional[List] = None,  # [B] × ([T, 2] or None), or [T, 2]
     ) -> torch.Tensor:                            # [B, T, D_g]
         """
         Run the full BEV → graph pipeline and return z_graph [B, T, D_g].
@@ -200,9 +198,11 @@ class AeroDuoPolicy(nn.Module):
         --------
         Frozen (loop over B, and over T for the VLM):
           1. BEVEncoder     → image_embeds [T,256,64,64], masks, detections  (per episode)
-          2. SmolVLM2       → hidden_states [T, S, 2048]                     (per frame)
+          2. SmolVLM2       → hidden_states [T, S, 2048]  (image + text only, per frame)
         Trainable (batched over B):
-          3. PerceiverIO    → place_nodes  [B, T, D_g]
+          3. PoseFeatureMerger + PerceiverIO
+                            → place_nodes  [B, T, D_g]  (hidden states cross-attend
+                              over projected high/low poses, then pooled)
           4. ObsVertexBuild → obs_tensor   [B, T, K_max, D_g]
           5. GraphEncoder   → z_graph      [B, T, D_g]
         """
@@ -212,16 +212,18 @@ class AeroDuoPolicy(nn.Module):
             bev_images  = [bev_images]
             high_uav_poses       = high_uav_poses.unsqueeze(0)
             low_uav_poses_window = low_uav_poses_window.unsqueeze(0)
+            if goal_offsets is not None:
+                goal_offsets = [goal_offsets]
 
         B     = len(instruction)
         T     = len(bev_images[0])
         dtype = self._trainable_dtype()
 
         # ── Step 1 & 2: frozen models — loop over B episodes ─────────────────
-        all_image_embeds: List[torch.Tensor]     = []   # B × Tensor[T,256,64,64]
-        all_masks:        List[List]             = []   # B × T × ndarray[N,H,W]
-        all_detections:   List[List]             = []   # B × T × List[dict]
-        all_hidden:       List[torch.Tensor]     = []   # B × Tensor[T, S, 2048]
+        all_image_embeds: List[torch.Tensor]       = []   # B × Tensor[T,256,64,64]
+        all_masks:        List[List]               = []   # B × T × ndarray[N,H,W]
+        all_detections:   List[List]               = []   # B × T × List[dict]
+        all_hidden:       List[List[torch.Tensor]] = []   # B × T × Tensor[S_bt, 2048]
 
         for b in range(B):
             # BEVEncoder: one Hiera forward for all T frames in this episode
@@ -233,22 +235,45 @@ class AeroDuoPolicy(nn.Module):
             all_detections.append(dets_b)
 
             # SmolVLM2: per-frame within this episode
+            go_b = goal_offsets[b] if goal_offsets is not None else None
             hs_b: List[torch.Tensor] = []
             for t in range(T):
+                go_bt = go_b[t] if go_b is not None else None
+                if go_bt is not None and torch.is_tensor(go_bt):
+                    go_bt = go_bt.tolist()
                 h = self.vlm_encoder(
                     bev_image=bev_images[b][t],
                     lang_description=instruction[b],
-                    low_state=low_uav_poses_window[b, t:t + 1].to(device),
-                    high_state=high_uav_poses[b, t:t + 1].to(device),
                     device=device,
+                    goal_offset=go_bt,
                 )                              # [1, S, 2048]
-                hs_b.append(h.squeeze(0))      # [S, 2048]
-            all_hidden.append(torch.stack(hs_b))  # [T, S, 2048]
+                hs_b.append(h.squeeze(0))      # [S_bt, 2048] — S varies per
+                # frame: the goal-cue text (fuzzy_goal_phrase) tokenizes to a
+                # different length depending on distance/bearing, so frames
+                # within a window (and across the batch) are ragged.
+            all_hidden.append(hs_b)
 
-        # ── Step 3: PerceiverIO [B, T, S, 2048] → [B, T, D_g] ────────────────
-        # Cast to trainable dtype; gradient tape starts here
-        position_vertices = torch.stack(all_hidden).to(dtype=dtype)  # [B, T, S, 2048]
-        place_nodes = self.place_node_builder(position_vertices)      # [B, T, D_g]
+        # ── Step 3: pose fusion + PerceiverIO [B, T, S, 2048] → [B, T, D_g] ──
+        # Right-pad every frame's hidden sequence to the batch-wide max S and
+        # build a validity mask so PerceiverIO's pooling ignores the padding.
+        S_max = max(h.shape[0] for hs_b in all_hidden for h in hs_b)
+        position_vertices = torch.zeros(
+            B, T, S_max, self.cfg.smolvlm2_hidden_dim, device=device, dtype=dtype
+        )
+        hidden_mask = torch.zeros(B, T, S_max, dtype=torch.bool, device=device)
+        for b in range(B):
+            for t in range(T):
+                h = all_hidden[b][t]
+                s = h.shape[0]
+                position_vertices[b, t, :s] = h.to(device=device, dtype=dtype)
+                hidden_mask[b, t, :s] = True
+
+        place_nodes = self.place_node_builder(
+            position_vertices,
+            high_uav_poses.to(device=device, dtype=dtype),           # [B, T, 4]
+            low_uav_poses_window.to(device=device, dtype=dtype),     # [B, T, 4]
+            mask=hidden_mask,                                        # [B, T, S_max]
+        )                                                             # [B, T, D_g]
 
         # ── Step 4: observation vertices [B, T, K_max, D_g] ──────────────────
         obs_list: List[List[List[ObsVertex]]] = []
@@ -285,13 +310,17 @@ class AeroDuoPolicy(nn.Module):
         instruction,                                            # List[str] or str
         device:                torch.device,
         low_uav_traj_target:   Optional[torch.Tensor] = None,   # [B, H, 4] or [H, 4]
+        goal_offsets:          Optional[List] = None,           # [B] × ([T, 2] or None), or [T, 2]
     ) -> Dict[str, torch.Tensor]:
         """
         Stage 1 training:  provide ``low_uav_traj_target``
-            → {"loss": scalar, "z_graph": [B,T,D_g], "v_pred": [B,H,4], "tau": [B]}
+            → {"loss": scalar, "z_graph": [B, T, D_g]}
+            (noise and τ are sampled inside FlowMatchingNetwork, GR00T-style)
 
         Stage 2 inference: omit ``low_uav_traj_target``
             → {"z_graph": [B, T, D_g]}
+            (sample trajectories with policy.flow_net.predict_action(z_graph,
+            low_state) → [B, H, 5] = (x, y, z, sin_h, cos_h))
 
         Accepts both single-episode (B=1 sugar) and batched (B > 1) inputs.
         The training loop can call policy(**batch, device=accelerator.device)
@@ -307,8 +336,8 @@ class AeroDuoPolicy(nn.Module):
             low_uav_pose_current  = low_uav_pose_current.unsqueeze(0)
             if low_uav_traj_target is not None:
                 low_uav_traj_target = low_uav_traj_target.unsqueeze(0)
-
-        B = len(instruction)
+            if goal_offsets is not None:
+                goal_offsets = [goal_offsets]
 
         z_graph = self.encode_graph(
             bev_images=bev_images,
@@ -316,6 +345,7 @@ class AeroDuoPolicy(nn.Module):
             low_uav_poses_window=low_uav_poses_window,
             instruction=instruction,
             device=device,
+            goal_offsets=goal_offsets,
         )   # [B, T, D_g]
 
         out: Dict[str, torch.Tensor] = {"z_graph": z_graph}
@@ -324,31 +354,43 @@ class AeroDuoPolicy(nn.Module):
             return out
 
         # ── Flow matching training ─────────────────────────────────────────────
-        dtype = z_graph.dtype
-
-        clean = low_uav_traj_target.to(device=device, dtype=dtype)   # [B, H, 4]
-        noise = torch.randn_like(clean)                               # [B, H, 4]
-
-        # One τ per episode in the batch
-        tau = torch.rand(B, device=device, dtype=dtype).clamp(1e-4, 1 - 1e-4)  # [B]
-
-        # x_τ = (1 − τ) · noise + τ · clean   (τ=0 → pure noise, τ=1 → clean)
-        tau3     = tau[:, None, None]                  # [B, 1, 1] for broadcasting
-        x_tau    = (1.0 - tau3) * noise + tau3 * clean # [B, H, 4]
-        v_target = clean - noise                        # [B, H, 4]
-
-        v_pred = self.flow_net(
+        # Noise, τ ~ (1 − Beta(α, β)) · noise_s, the sin/cos heading encoding
+        # and the MSE loss all live inside the head (GR00T-style, mirroring
+        # LowUAVActionHead); the head also casts inputs to its own dtype.
+        out["loss"] = self.flow_net(
             z_graph=z_graph,
-            low_state=low_uav_pose_current.to(device=device, dtype=dtype),
-            x_tau=x_tau,
-            tau=tau,
-        )   # [B, H, action_dim]
-
-        out["loss"]   = F.mse_loss(v_pred, v_target)
-        out["v_pred"] = v_pred
-        out["tau"]    = tau
+            low_state=low_uav_pose_current,
+            low_actions=low_uav_traj_target,
+        )
 
         return out
+
+    @torch.no_grad()
+    def get_graph(
+        self,
+        bev_images:           List,              # [B][T] List[List[PIL]] or [T] List[PIL]
+        high_uav_poses:       torch.Tensor,      # [B, T, 4] or [T, 4]
+        low_uav_poses_window: torch.Tensor,      # [B, T, 4] or [T, 4]
+        instruction,                             # List[str] length B or str
+        device:               torch.device,
+        goal_offsets:         Optional[List] = None,  # [B] × ([T, 2] or None), or [T, 2]
+    ) -> torch.Tensor:                            # [B, T, D_g]
+        """
+        Frozen accessor for Stage 2: encode_graph() under no_grad.
+
+        Returns a detached z_graph [B, T, D_g] so downstream losses cannot
+        backprop into Stage 1.  The caller is responsible for having put the
+        policy in eval() mode (Stage 2 train.py does this after loading the
+        checkpoint).
+        """
+        return self.encode_graph(
+            bev_images=bev_images,
+            high_uav_poses=high_uav_poses,
+            low_uav_poses_window=low_uav_poses_window,
+            instruction=instruction,
+            device=device,
+            goal_offsets=goal_offsets,
+        )
 
     # ── Selective checkpointing ────────────────────────────────────────────────
 
@@ -382,8 +424,9 @@ class AeroDuoPolicy(nn.Module):
                 module.load_state_dict(sub_sd, strict=strict)
 
     def _trainable_modules(self):
+        # place_node_builder includes PoseFeatureMerger (pose projectors +
+        # cross-attention) alongside the PerceiverIO pooling.
         yield "place_node_builder", self.place_node_builder
         yield "obs_vertex_builder", self.obs_vertex_builder
         yield "graph_encoder",      self.graph_encoder
         yield "flow_net",           self.flow_net
-        yield "vlm_encoder.pose_token_proj", self.vlm_encoder.pose_token_proj

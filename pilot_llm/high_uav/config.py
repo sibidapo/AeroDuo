@@ -66,26 +66,42 @@ class AeroduoConfig:
     # Number of timesteps in the sliding window fed to GraphEncoder.
     window_T: int = 5
 
-    # ── Flow matching ─────────────────────────────────────────────────────────
-    # Trajectory state dimensionality — matches normalized_state in the dataset:
-    # (x, y, z, heading_rad).
+    # ── Flow matching (GR00T-style head — mirrors low_uav LowUAVActionHead) ──
+    # Raw trajectory state from the dataset: (x, y, z, heading_rad).
     action_dim: int = 4
+
+    # Flow-space dims after sin/cos heading encoding inside the head:
+    # (x, y, z, sin_h, cos_h).  Noise, the ODE path and the MSE loss all live
+    # in this 5-dim space; decode heading with atan2(sin_h, cos_h).
+    flow_state_dim: int = 5
+    flow_action_dim: int = 5
 
     # Denoising horizon H — number of future timesteps predicted jointly.
     action_horizon: int = 8
 
-    # Number of FlowDenoiserBlock layers.
-    flow_matching_layers: int = 4
+    # DiT denoiser — architecture mirrors low_uav DITConfig but sized down
+    # (2026-07-14 rebalance): the head was 583M vs a 52M encoder (11:1), so
+    # the DiT could absorb the trajectory prior and starve z_graph of
+    # gradient.  Now ~80M head vs ~74M encoder (≈1:1), matched to Hal-13k.
+    # Interleaved cross/self attention blocks (even idx: cross-attend z_graph,
+    # odd idx: self-attend over [state | action] tokens).  Keep layers even.
+    flow_matching_layers: int = 8
 
-    # Attention heads inside FlowDenoiserBlock; D_g must be divisible by this.
-    flow_matching_heads: int = 4
+    flow_matching_heads: int = 16
 
-    # FFN inner dim multiplier: FFN hidden dim = D_g * flow_matching_ffn_mult.
-    flow_matching_ffn_mult: int = 4
+    flow_matching_head_dim: int = 48
 
-    # ── Flow matching — additional DiT / GR00T-aligned options ──────────────
-    # Discretization of τ ∈ [0,1] for diffusers.Timesteps (integer buckets).
-    num_timestep_buckets: int = 1000
+    # DiT inner dim; must equal flow_matching_heads * flow_matching_head_dim.
+    flow_input_emb_dim: int = 768
+
+    # DiT output dim → action_decoder MLP input.
+    flow_output_dim: int = 512
+
+    # Hidden dim of the state/action encoder and action decoder MLPs.
+    flow_hidden_dim: int = 512
+
+    # 0.2 regularized the old 583M head; on ~80M it would underfit.
+    flow_matching_dropout: float = 0.1
 
     # Q/K/V projection bias inside diffusers.Attention.
     flow_matching_attention_bias: bool = True
@@ -93,21 +109,64 @@ class AeroduoConfig:
     # FFN activation; "gelu-approximate" matches GR00T default.
     flow_matching_activation: str = "gelu-approximate"
 
+    # Sinusoidal positional-embedding table inside each DiT block.
+    flow_max_num_positional_embeddings: int = 512
+
+    # Learned positional embedding added to action tokens before the DiT.
+    flow_add_pos_embed: bool = True
+    flow_max_seq_len: int = 1024
+
+    # ── Flow matching — τ discretization and sampling (GR00T convention) ─────
+    # Discretization of τ ∈ [0,1] for diffusers.Timesteps (integer buckets).
+    num_timestep_buckets: int = 1000
+
+    # τ = (1 − Beta(α, β)) · noise_s — biased toward the noisy end (τ ≈ 0).
+    noise_beta_alpha: float = 1.5
+    noise_beta_beta: float = 1.0
+    noise_s: float = 0.99
+
+    # Euler integration steps in FlowMatchingNetwork.predict_action.
+    num_inference_timesteps: int = 4
+
+    # Probability of omitting the low-UAV state token from the DiT input
+    # sequence during training.  The current low-UAV pose is also present in
+    # z_graph (low_uav_poses_window[t_end] is fused into the place nodes), so
+    # dropping the direct state path forces the DiT to recover it through
+    # cross-attention to the graph instead of shortcutting from the state
+    # token.  0.0 disables; predict_action always keeps the state token.
+    state_dropout_p: float = 0.25
+
+    # ── Pose feature merger (position vertex pose conditioning) ───────────────
+    # Cross-attention block inside PositionVertexBuilder: VLM hidden states
+    # (queries) attend over a 2-token KV context built from the projected
+    # high/low UAV poses.  Mirrors FeatureMerger in the low-UAV action head.
+    pose_merger_hidden_dim: int = 2048
+
+    # Pose projection dim (K/V input): each pose is sin/cos-encoded to 5-dim
+    # then projected Linear(5, pose_merger_kv_dim).
+    pose_merger_kv_dim: int = 2048
+
+    pose_merger_n_head: int = 8
+
+    pose_merger_dropout: float = 0.0
+
     # ── Perceiver IO (position vertex compression) ────────────────────────────
+    # Widened in the 2026-07-14 rebalance: this is the narrowest point of the
+    # pipeline ([S≈189, 2048] VLM tokens → one D_g place node per timestep).
     # Number of latent vectors inside the Perceiver IO bottleneck.
-    perceiver_M: int = 64
+    perceiver_M: int = 128
 
     # Dimension of each latent vector.
-    perceiver_D_latent: int = 256
+    perceiver_D_latent: int = 512
 
     # Number of (cross-attention → latent self-attention) rounds.
-    perceiver_depth: int = 2
+    perceiver_depth: int = 3
 
     # Attention heads in latent self-attention.
     perceiver_n_heads: int = 8
 
     # ── Graph encoder ─────────────────────────────────────────────────────────
-    graph_encoder_layers: int = 3
+    graph_encoder_layers: int = 4
     graph_encoder_heads: int = 4
 
     # ── Observation vertices ──────────────────────────────────────────────────
