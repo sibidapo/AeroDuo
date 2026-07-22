@@ -431,6 +431,32 @@ class LowUAVActionHead(nn.Module):
             return self.feat_merger(z_graph, vl_embs)  # [B, L, H]
         return self.vl_norm(vl_embs.to(dtype=self.vl_norm.weight.dtype))
 
+    @staticmethod
+    def _encoder_attention_mask(
+        vl_mask: Optional[torch.Tensor], dtype: torch.dtype
+    ) -> Optional[torch.Tensor]:
+        """
+        Bool validity mask [B, L] (True = real token) → additive float mask for
+        the DiT's cross-attention: 0.0 on real tokens, -inf on padding.
+
+        Needed once batch_size > 1: per-sample VLM sequences are ragged and get
+        right-padded in LowUAVPolicy._encode_vlm_batch, so without this the DiT
+        would cross-attend over padded positions (which are not zero — the
+        FeatureMerger/LayerNorm turn zero rows into non-zero garbage).
+
+        diffusers' Attention.prepare_attention_mask repeats a [B, L] mask across
+        heads and reshapes to [B, heads, 1, L]; SDPA then adds it to the logits.
+        Padding is never fully masked for a whole row (every sample has >=1 real
+        token), so no NaNs.  Note the FeatureMerger itself needs no mask: its
+        softmax runs over z_graph's T axis, so padded query rows only corrupt
+        their own output positions, which this mask then drops.
+        """
+        if vl_mask is None:
+            return None
+        return torch.zeros(vl_mask.shape, dtype=dtype, device=vl_mask.device).masked_fill(
+            ~vl_mask, torch.finfo(dtype).min
+        )
+
     def _encode_heading(self, pose: torch.Tensor) -> torch.Tensor:
         xyz = pose[..., :3]
         sin_h = torch.sin(pose[..., 3]).unsqueeze(-1)
@@ -446,6 +472,7 @@ class LowUAVActionHead(nn.Module):
         z_graph: Optional[torch.Tensor],     # [B, T_h, D_g], or None when use_zgraph=False
         low_state: torch.Tensor,             # [B, 4]
         low_actions: torch.Tensor,           # [B, T_l, 4]
+        vl_mask: Optional[torch.Tensor] = None,  # [B, L] bool, True = real token
     ) -> torch.Tensor:
 
         device = vl_embs.device
@@ -496,6 +523,7 @@ class LowUAVActionHead(nn.Module):
             encoder_hidden_states=merged_feats,
             timestep=t_discretized,
             return_all_hidden_states=False,
+            encoder_attention_mask=self._encoder_attention_mask(vl_mask, merged_feats.dtype),
         )
 
         pred = self.action_decoder(model_output)
@@ -514,6 +542,7 @@ class LowUAVActionHead(nn.Module):
         vl_embs: torch.Tensor,
         z_graph: Optional[torch.Tensor],
         low_state: torch.Tensor,
+        vl_mask: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """
         Generate actions from random noise using the flow matchin diffusion process.
@@ -544,6 +573,7 @@ class LowUAVActionHead(nn.Module):
 
         # =================Step 2: Prepare all input features ========================================
         merged_feats = self._condition_feats(vl_embs, z_graph)  # [B, L, H]
+        encoder_attention_mask = self._encoder_attention_mask(vl_mask, merged_feats.dtype)
 
         low_state   = low_state.to(device=device, dtype=dtype)
         if low_state.dim() == 2:  # [B, 4] -> [B, 1, 4]
@@ -580,6 +610,7 @@ class LowUAVActionHead(nn.Module):
                 hidden_states=sa_embs,
                 encoder_hidden_states=merged_feats,
                 timestep=timestep_tensor,
+                encoder_attention_mask=encoder_attention_mask,
             )
             pred = self.action_decoder(model_output)
 

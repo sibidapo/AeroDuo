@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import gc
 import math
-from typing import Dict, List, Optional, Sequence
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import torch
 import torch.nn as nn
@@ -243,17 +243,35 @@ class LowUAVPolicy(nn.Module):
         device: torch.device,
         low_goal_offsets: Optional[List] = None,   # [B] × ([2] or None) — (Δnorth, Δeast) m
         headings: Optional[torch.Tensor] = None,   # [B] — yaw radians (north-referenced)
-    ) -> torch.Tensor:
-        """Run LowVLMEncoder over a batch; returns [B, L, H]."""
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Run LowVLMEncoder over a batch; returns (vl_embs [B, L_max, H],
+        vl_mask [B, L_max] bool, True = real token).
+
+        Per-sample sequence length is ragged: the instruction text differs per
+        episode and the fuzzy goal cue (fuzzy_ego_goal_phrase) tokenizes to a
+        different length depending on sector/distance.  Right-pad to L_max and
+        return a validity mask so the action head's cross-attention ignores the
+        padding — same treatment high_uav/aeroduo_policy.encode_graph applies to
+        its ragged per-frame VLM hidden states.
+        """
         if low_goal_offsets is None:
             low_goal_offsets = [None] * len(front_images)
         embs = []
         for b, (img, instr, off) in enumerate(zip(front_images, instructions, low_goal_offsets)):
             heading = float(headings[b]) if (headings is not None and off is not None) else None
             with torch.no_grad():
-                emb = self.vlm_encoder(img, instr, device, goal_offset=off, heading=heading)  # [1, L, H]
+                emb = self.vlm_encoder(img, instr, device, goal_offset=off, heading=heading)  # [1, L_b, H]
             embs.append(emb.squeeze(0))
-        return torch.stack(embs)  # [B, L, H]
+
+        lengths = [e.shape[0] for e in embs]
+        L_max = max(lengths)
+        vl_embs = embs[0].new_zeros(len(embs), L_max, embs[0].shape[-1])
+        vl_mask = torch.zeros(len(embs), L_max, dtype=torch.bool, device=vl_embs.device)
+        for b, e in enumerate(embs):
+            vl_embs[b, :lengths[b]] = e
+            vl_mask[b, :lengths[b]] = True
+        return vl_embs, vl_mask
 
     def forward(
         self,
@@ -287,16 +305,18 @@ class LowUAVPolicy(nn.Module):
         else:
             z_graph = None
 
-        vl_embs = self._encode_vlm_batch(
+        vl_embs, vl_mask = self._encode_vlm_batch(
             low_uav_front_image, instruction, device,
             low_goal_offsets=low_goal_offset,
             headings=low_uav_pose_current[:, 3],  # raw yaw radians (never normalized)
-        )  # [B, L, H]
+        )  # [B, L_max, H], [B, L_max]
 
         out: Dict[str, torch.Tensor] = {"z_graph": z_graph}
 
         if low_uav_traj_target is None:
-            out["actions"] = self.action_head.predict_action(vl_embs, z_graph, low_uav_pose_current)
+            out["actions"] = self.action_head.predict_action(
+                vl_embs, z_graph, low_uav_pose_current, vl_mask=vl_mask
+            )
             return out
 
         out["loss"] = self.action_head(
@@ -304,6 +324,7 @@ class LowUAVPolicy(nn.Module):
             z_graph=z_graph,
             low_state=low_uav_pose_current,
             low_actions=low_uav_traj_target,
+            vl_mask=vl_mask,
         )
         return out
 
@@ -335,12 +356,14 @@ class LowUAVPolicy(nn.Module):
             )  # [B, T, D_g]
         else:
             z_graph = None
-        vl_embs = self._encode_vlm_batch(
+        vl_embs, vl_mask = self._encode_vlm_batch(
             low_uav_front_image, instruction, device,
             low_goal_offsets=low_goal_offset,
             headings=low_uav_pose_current[:, 3],
-        )  # [B, L, H]
-        return self.action_head.predict_action(vl_embs, z_graph, low_uav_pose_current)
+        )  # [B, L_max, H], [B, L_max]
+        return self.action_head.predict_action(
+            vl_embs, z_graph, low_uav_pose_current, vl_mask=vl_mask
+        )
 
     def trainable_state_dict(self) -> Dict[str, torch.Tensor]:
         sd: Dict[str, torch.Tensor] = {}

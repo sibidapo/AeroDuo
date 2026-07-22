@@ -37,6 +37,18 @@ class DualUAVPilot:
         self._low_pose_mean  = np.array(cfg.low_pose_mean,  dtype=np.float64)
         self._low_pose_std   = np.array(cfg.low_pose_std,   dtype=np.float64)
 
+        # GLOBAL min/max for the low-UAV action (xyz relative to the CURRENT
+        # pose, per horizon) — same stats and convention as
+        # low_uav/dataset2.py._normalize_action / high_uav/dataset.py, used
+        # here in reverse to decode predicted actions back to world coords.
+        self._action_min_max = {
+            int(h): (
+                np.array(stats["min"], dtype=np.float64),
+                np.array(stats["max"], dtype=np.float64),
+            )
+            for h, stats in cfg.action_min_max.items()
+        }
+
         self._bev_window:       deque = deque(maxlen=self.window_T)   # PIL RGB images
         self._high_pose_window: deque = deque(maxlen=self.window_T)   # np [4] each
         self._low_pose_window:  deque = deque(maxlen=self.window_T)   # np [4] each
@@ -211,12 +223,25 @@ class DualUAVPilot:
         # Same frame as training (+x = north, +y = east); None → prompt falls
         # back to the static directional prior.
         goal_offsets = None
+        low_goal_offset = None
         if goal_position is not None:
             goal_xy = np.asarray(goal_position, dtype=np.float32)[:2]
             goal_offsets = [torch.tensor(
                 np.stack([goal_xy - p[:2] for p in self._padded_window(self._high_pose_window)]),
                 dtype=torch.float32,
             )]  # [B=1] × [T, 2]
+
+            # Egocentric fuzzy direction cue for the low-UAV VLM prompt: target
+            # minus the raw (world-frame) CURRENT low-UAV position — same
+            # "target_world - pos_world" convention as goal_offsets above, and
+            # the same quantity training builds as low_goal_offset (dataset2.py:
+            # goal_xy - rel_state[t_end]). Without this the low-UAV prompt's
+            # direction_line collapses to "" at eval even though the model was
+            # trained to depend on it (lowuav_policy.py._encode_vlm_batch).
+            low_goal_offset = [torch.tensor(
+                goal_xy - low_pose_current_xyzh[:2].astype(np.float32),
+                dtype=torch.float32,
+            )]  # [B=1] × [2]
 
         high_poses = np.stack([
             self._normalize_pose(p, self._high_pose_origin, self._high_pose_mean, self._high_pose_std)
@@ -247,10 +272,21 @@ class DualUAVPilot:
             instruction = [instruction],
             device = torch.device(self.device),
             goal_offsets = goal_offsets,        # [B=1] × [T, 2] or None
+            low_goal_offset = low_goal_offset,  # [B=1] × [2] or None
         )
 
         actions = actions_tensor[0].cpu().float().numpy()   # [H, 5]
-        xyz = actions[:, :3] * self._low_pose_std + self._low_pose_mean + self._low_pose_origin  # [H, 3]
+
+        # Predicted xyz is min-max normalized to [-1, 1], relative to the
+        # CURRENT low-UAV pose (t_end) — NOT the z-normalized/episode-origin
+        # pose space used elsewhere in this file. Invert the exact transform
+        # low_uav/dataset2.py._normalize_action applies at training time:
+        #   norm = 2*(raw-min)/(max-min) - 1  =>  raw = min + (norm+1)/2*(max-min)
+        # then add the raw displacement to the current raw world position.
+        H = actions.shape[0]
+        action_min, action_max = self._action_min_max[H]
+        raw_disp = action_min + (actions[:, :3] + 1.0) / 2.0 * (action_max - action_min)  # [H, 3]
+        xyz = raw_disp + low_pose_current_xyzh[:3]  # [H, 3]
         heading = np.arctan2(actions[:, 3], actions[:, 4])
 
         waypoints = np.concatenate([xyz, heading[:, None]], axis=1).tolist()  # [H, 4] = [x, y, z, h]

@@ -29,10 +29,11 @@ DataLoader runs with batch_size=1 and num_workers=0.
 Usage
 -----
 python train.py \\
-    --dataset_root /path/to/hal-13k \\
     --output_dir   ./checkpoints/stage1 \\
     --gradient_accumulation_steps 4 \\
     --max_train_steps 50000
+    # --train_data defaults to <aeroduo>/data/train_data_new.json; pass
+    # --train_data /path/to/manifest.json to override.
 
 Resuming
 --------
@@ -97,13 +98,9 @@ def parse_args() -> argparse.Namespace:
 
     # Data
     parser.add_argument(
-        "--dataset_root", type=str, required=True,
-        help="Root of the Hal-13k dataset (parent of Carla_Town* directories).",
-    )
-    parser.add_argument(
-        "--towns", nargs="*", default=None,
-        help="Restrict to these town directory names, e.g. Carla_Town01 Carla_Town02. "
-             "Default: all Carla_* directories.",
+        "--train_data", type=str,
+        default=str(_PKG_DIR.parents[1] / "data" / "train_data_new.json"),
+        help="Path to train_data_new.json (episode manifest).",
     )
     parser.add_argument("--window_T",       type=int, default=5,
                         help="BEV observation window length T.")
@@ -289,7 +286,7 @@ def main() -> None:
                 "action_horizon":             args.action_horizon,
                 "max_train_steps":            args.max_train_steps,
                 "seed":                       args.seed,
-                "dataset_root":               args.dataset_root,
+                "train_data":                 args.train_data,
             },
             dir=args.output_dir,
             resume="allow",
@@ -355,10 +352,10 @@ def main() -> None:
     #   - collate_fn asserts batch_size == 1
     #   - SAM2 / SmolVLM2 are not picklable across worker processes
     train_dataset = AeroduoDataset(
-        dataset_root=args.dataset_root,
+        train_data_path=args.train_data,
         window_T=args.window_T,
         action_horizon=args.action_horizon,
-        towns=args.towns,
+        cfg=cfg,
     )
     train_dataloader = DataLoader(
         train_dataset,

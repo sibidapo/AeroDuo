@@ -21,11 +21,12 @@ Trainable:
 Usage
 -----
 python train.py \\
-    --dataset_root /path/to/hal-13k \\
     --stage1_ckpt  ../high_uav/checkpoint/main/final/trainable_state.pt \\
     --output_dir   ./checkpoint/stage2/main \\
     --gradient_accumulation_steps 4 \\
     --max_train_steps 50000
+    # --train_data defaults to <aeroduo>/data/train_data_new.json; pass
+    # --train_data /path/to/manifest.json to override.
 
 Resuming
 --------
@@ -100,16 +101,17 @@ def parse_args() -> argparse.Namespace:
         description="AeroDuo Stage 2 — low-UAV action head training"
     )
 
-    parser.add_argument("--dataset_root", type=str, required=True,
-                        help="Root of the Hal-13k dataset.")
+    parser.add_argument(
+        "--train_data", type=str,
+        default=str(_PKG_DIR.parents[1] / "data" / "train_data_new.json"),
+        help="Path to train_data_new.json (episode manifest).",
+    )
     parser.add_argument("--stage1_ckpt", type=str, default=None,
                         help="Path to Stage 1 trainable_state.pt checkpoint. "
                              "Required unless --no_zgraph is set.")
     parser.add_argument("--no_zgraph", action="store_true",
                         help="Train the low UAV standalone: no z_graph conditioning, "
                              "Stage 1 / SAM2 / GroundingDINO are never loaded.")
-    parser.add_argument("--towns", nargs="*", default=None,
-                        help="Restrict to these town directory names.  Default: all Carla_*.")
     parser.add_argument("--window_T",       type=int, default=5)
     parser.add_argument("--action_horizon", type=int, default=8)
     parser.add_argument("--batch_size", type=int, default=1)
@@ -254,7 +256,7 @@ def main() -> None:
                 "action_horizon":              args.action_horizon,
                 "max_train_steps":             args.max_train_steps,
                 "seed":                        args.seed,
-                "dataset_root":                args.dataset_root,
+                "train_data":                  args.train_data,
                 "stage1_ckpt":                 args.stage1_ckpt,
                 "use_zgraph":                  not args.no_zgraph,
             },
@@ -323,10 +325,10 @@ def main() -> None:
 
     # ── Dataset + DataLoader ──────────────────────────────────────────────────
     train_dataset = AeroduoDataset(
-        dataset_root=args.dataset_root,
+        train_data_path=args.train_data,
         window_T=args.window_T,
         action_horizon=args.action_horizon,
-        towns=args.towns,
+        cfg=low_cfg,
     )
     train_dataloader = DataLoader(
         train_dataset,

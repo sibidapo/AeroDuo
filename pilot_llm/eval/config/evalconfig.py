@@ -141,11 +141,37 @@ class EvalConfig:
     high_uav: AeroduoConfig = field(default_factory=AeroduoConfig)
     low_uav: LowUAVConfig = field(default_factory=LowUAVConfig)
 
-    high_pose_mean: list = field(default_factory=lambda: [2.2920649268586413,  1.5598497199559498,  0.30744953615691395])
-    high_pose_std:  list = field(default_factory=lambda: [103.52307969348121,  97.6590141809465,    0.1736568502999414])
-    low_pose_mean:  list = field(default_factory=lambda: [2.163912972312585,   3.3360087130316463, -11.533982636972944])
-    low_pose_std:   list = field(default_factory=lambda: [108.58051850716025,  100.61899512245166,  27.46142639558381])
-    
+    # Same global stats as AeroduoConfig.high_pose_mean/std and
+    # LowUAVConfig.low_pose_mean/std (see high_uav/config.py) — computed by
+    # data_preprocessing/generate_trajectories.py over all 8901 episodes in
+    # data/train_data_new.json. Kept in sync so eval-time normalization of
+    # raw AirSim poses (_normalize_pose below) matches what the model was
+    # trained on.
+    high_pose_mean: list = field(default_factory=lambda: [3.3610526945746626, -0.3325858628344677, 0.33880942396714486])
+    high_pose_std:  list = field(default_factory=lambda: [114.7756392836723, 109.91593135767647, 0.33489186206406946])
+    low_pose_mean:  list = field(default_factory=lambda: [3.94354055381394, -0.4868388438716282, -15.014240206727887])
+    low_pose_std:   list = field(default_factory=lambda: [119.14186092932334, 115.9592733580364, 24.65062999168105])
+
+    # Same global stats as AeroduoConfig.action_min_max / LowUAVConfig.action_min_max
+    # (see high_uav/config.py) — GLOBAL min/max for the low-UAV action (xyz
+    # displacement relative to the CURRENT pose, per horizon). Kept in sync
+    # so DualUAVPilot.predict() un-normalizes model output (min-max inverse,
+    # then add to the current raw pose) with the exact same stats training used.
+    action_min_max: dict = field(default_factory=lambda: {
+        2: {
+            "min": [-57.82021141052246, -55.12806701660156, -20.334530651569366],
+            "max": [57.591400146484375, 45.1695556640625, 37.870065689086914],
+        },
+        4: {
+            "min": [-99.37514746189117, -76.58756959438324, -20.36567783355713],
+            "max": [114.47732543945312, 72.4588623046875, 47.49151420593262],
+        },
+        8: {
+            "min": [-126.96470642089844, -90.15975892543793, -39.8125],
+            "max": [202.19479370117188, 113.83048248291016, 65.4615421295166],
+        },
+    })
+
     stage1_ckpt: Optional[str] = field(default=None)
     stage2_ckpt: Optional[str] = field(default=None)
 

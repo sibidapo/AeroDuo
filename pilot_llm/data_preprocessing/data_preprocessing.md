@@ -22,3 +22,13 @@
     python filter_discrepant_episodes.py --max-discrepancy 70
     ```
     Total number of trajectory = 8901
+
+8. Deleted all bevcamera_depth across all scenes
+
+9. In each trajectory folder, ```low_uav_traj.json``` and ```high_uav_traj.json``` using ``aeroduo/pilot_llm/data_preprocessing/generate_trajectories.py``, with source trajectory data from ``action.json`` and ``log/0000i.json`` for both low and high uav respectively. The ``aeroduo/pilot_llm/data_preprocessing/generate_trajectories.py`` script also includes the episode-relative trajectory, by substracting every trajectory form the initial trajectory.
+
+10. The ``aeroduo/pilot_llm/data_preprocessing/generate_trajectories.py`` script also calculates the episode-relative trajectory statistics and it is included in the low and high uav config files
+
+11. Current-pose relative statistics (min, max) is estimated using: ```aeroduo/pilot_llm/data_preprocessing/compute_action_stats.py``` for action horizons of 2, 4, 8 (to be compared during ablation). This is used for normalizing chunked actions in dataset.
+
+12. Note, need to fix eval checkpoints matching with new model params after training. ALso need to fix the goal_offset prompt to match current (relative vs absolute)
