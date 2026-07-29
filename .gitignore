@@ -128,7 +128,8 @@ airsim_*_client.log
 # -----------------------------
 #!/bin/sh
 # Ignore a specific dataset subfolder instead of entire data/
-data/Hal-13k/
+data/HaL-13k
+data/HaL-13k/
 data/Hal-13k_test/
 
 envs/
@@ -143,3 +144,5 @@ wandb/
 *.cache
 
 data/train_data_new.json
+
+output_testrun/
