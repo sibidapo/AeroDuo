@@ -12,6 +12,7 @@ mkdir -p "$OUTPUT_DIR"
 
 accelerate launch --num_processes 2 --num_machines 1 --mixed_precision bf16 train.py \
   --no_zgraph \
+  --resume               "$OUTPUT_DIR/checkpoint-26000/trainable_state.pt" \
   --train_data           "$TRAIN_DATA" \
   --output_dir           "$OUTPUT_DIR" \
   --batch_size           16 \

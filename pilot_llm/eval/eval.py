@@ -245,18 +245,24 @@ class EvalRollout:
     def save_to_dataset(self, root_path, i):
         if not os.path.exists(root_path):
             os.makedirs(root_path)
-        folder_names = ['bevcamera', 'log', 'log2']
+        folder_names = ['bevcamera', 'frontcamera', 'log', 'log2']
         for folder_name in folder_names:
             os.makedirs(os.path.join(root_path, folder_name), exist_ok=True)
+        self.save_images(root_path, i)
         self.save_logs(root_path, i)
 
     def save_images(self, trajectory_dir, i):
         episodes = self.episodes[i]
         for idx, episode in enumerate(episodes):
-            if 'bev' in episode:
-                image = episode['bev']
+            # if 'bev' in episode:
+            #     image = episode['bev']
+            #     cv2.imwrite(
+            #         os.path.join(trajectory_dir, 'bevcamera',
+            #                      str(idx).zfill(6) + '.png'), image)
+            if 'rgb' in episode and len(episode['rgb']) > 0:
+                image = episode['rgb'][0]  # RGB_FOLDER[0] == 'frontcamera'
                 cv2.imwrite(
-                    os.path.join(trajectory_dir, 'bevcamera',
+                    os.path.join(trajectory_dir, 'frontcamera',
                                  str(idx).zfill(6) + '.png'), image)
                 
     def save_logs(self, trajectory_dir, i):
@@ -291,8 +297,6 @@ class EvalRollout:
 
     def check_traj_status(self, metrics):
         for i in range(self.train_env.batch_size):
-            if len(self.drone1_trajs[0]) - 1 > self.maxWaypoints:
-                self.dones[i] = True
             if len(self.drone1_trajs[i]) > 1:
                 delta_distance = np.linalg.norm(
                     np.array(self.drone1_trajs[i][-1]) -
@@ -307,7 +311,8 @@ class EvalRollout:
                 prex = ""
                 self.envs_to_pause.append(i)
                 if len(self.distance_to_ends[i]) > 0 and self.distance_to_ends[i][-1] <= 20:
-                    self.success[i] = True
+                    if not self.collisions[i]:
+                        self.success[i] = True
                     self.oracle_success[i] = True
                 if self.success[i]:
                     prex = 'success_'

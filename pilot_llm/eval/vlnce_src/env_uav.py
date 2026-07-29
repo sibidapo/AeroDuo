@@ -760,7 +760,11 @@ class AirVLNENV:
                     np.array(self.batch[index]['object_position'])
             ) < self.sim_states[index].SUCCESS_DISTANCE:
                 self.sim_states[index].oracle_success = True
-            elif self.sim_states[index].step >= int(args.maxWaypoints):
+            elif self.sim_states[index].step >= int(args.maxWaypoints) * int(
+                    args.steps_per_plan):
+                # step counts executed waypoints (steps_per_plan per outer
+                # planning step), so the budget is maxWaypoints PLANNING steps
+                # — matching the t >= maxWaypoints check in eval.py's loop.
                 self.sim_states[index].is_end = True
 
             if self.sim_states[index].is_end == True:
@@ -827,7 +831,10 @@ class AirVLNENV:
                     np.array(self.batch[index]['object_position'])
             ) < self.sim_states[index].SUCCESS_DISTANCE:
                 self.sim_states[index].oracle_success = True
-            elif self.sim_states[index].step >= int(args.maxWaypoints):
+            elif self.sim_states[index].step >= int(args.maxWaypoints) * int(
+                    args.steps_per_plan):
+                # Same budget convention as makeActions: maxWaypoints counts
+                # planning steps, step counts executed waypoints.
                 self.sim_states[index].is_end = True
 
             if self.sim_states[index].is_end == True:

@@ -35,7 +35,7 @@ from __future__ import annotations
 import gc
 import logging
 import math
-from typing import Optional, Sequence
+from typing import List, Optional, Sequence
 
 import torch
 import torch.nn as nn
@@ -172,15 +172,14 @@ class SmolVLM2Encoder(nn.Module):
 
     # ── Processor helper ───────────────────────────────────────────────────────
 
-    def build_processor_inputs(
+    def _prompt_text(
         self,
         bev_image,
         language_text: str,
-        device: torch.device = torch.device("cuda"),
         goal_offset: Optional[Sequence[float]] = None,
-    ) -> dict:
+    ) -> str:
         """
-        Build SmolVLM2 processor inputs for one BEV frame.
+        Build the chat-templated prompt string for one BEV frame.
 
         goal_offset : optional (Δnorth, Δeast) in metres from the high UAV's
             *current* position to the target.  When given, the prompt carries a
@@ -227,7 +226,17 @@ class SmolVLM2Encoder(nn.Module):
                 ],
             }
         ]
-        prompt = self.processor.apply_chat_template(messages, add_generation_prompt=False)
+        return self.processor.apply_chat_template(messages, add_generation_prompt=False)
+
+    def build_processor_inputs(
+        self,
+        bev_image,
+        language_text: str,
+        device: torch.device = torch.device("cuda"),
+        goal_offset: Optional[Sequence[float]] = None,
+    ) -> dict:
+        """Build SmolVLM2 processor inputs for one BEV frame."""
+        prompt = self._prompt_text(bev_image, language_text, goal_offset)
         inputs = self.processor(text=prompt, images=[bev_image], return_tensors="pt")
         return {k: v.to(device) for k, v in inputs.items()}
 
@@ -235,40 +244,64 @@ class SmolVLM2Encoder(nn.Module):
 
     def forward(
         self,
-        bev_image,
+        bev_images: Sequence,
         lang_description: str,
         device: torch.device = torch.device("cuda"),
-        goal_offset: Optional[Sequence[float]] = None,
-    ) -> torch.Tensor:
+        goal_offsets: Optional[Sequence] = None,
+    ) -> List[torch.Tensor]:
         """
-        Run SmolVLM2 with BEV image + language text and return the decoder's
-        last_hidden_state.  UAV poses are NOT fed here — PositionVertexBuilder
-        cross-attends the returned hidden states with projected pose tokens.
+        Run SmolVLM2 over a window of T frames of one episode with ONE
+        text-model forward (T=1 is fine) and return per-frame hidden states.
+        UAV poses are NOT fed here — pose conditioning happens downstream.
 
-        Token layout fed to the (truncated) decoder
-        --------------------------------------------
-        [BEV image tokens] [language tokens]
+        Token layout per sequence: [BEV image tokens] [language tokens].
+        Sequences are right-padded to the longest prompt in the window (the
+        fuzzy goal cue tokenizes to different lengths per frame).  Right
+        padding is required for correctness: the text model derives positions
+        as arange(S), which only matches an unpadded forward when real tokens
+        start at position 0.
 
         Parameters
         ----------
-        bev_image        : PIL.Image or np.ndarray (H,W,3) RGB
-        lang_description : str
+        bev_images       : T × (PIL.Image or np.ndarray (H,W,3) RGB)
+        lang_description : str — shared instruction for the episode
         device           : torch.device
-        goal_offset      : optional (Δnorth, Δeast) metres from the high UAV's
-                           current position to the target — see
-                           ``build_processor_inputs``
+        goal_offsets     : optional T × (Δnorth, Δeast) metres from the high
+                           UAV's current position to the target; entries may
+                           be tensors, sequences, or None
 
         Returns
         -------
-        Tensor [B, S, hidden_size] — last_hidden_state of the truncated decoder
+        List of T tensors [S_t, hidden_size] — last_hidden_state of the
+        truncated decoder per frame, padding already stripped (S_t varies).
         """
+        T = len(bev_images)
         vlm_dtype = next(self.vlm.model.text_model.parameters()).dtype
 
-        proc                 = self.build_processor_inputs(bev_image, lang_description, device, goal_offset)
-        input_ids            = proc["input_ids"]
-        pixel_values         = proc["pixel_values"]
-        pixel_attention_mask = proc["pixel_attention_mask"]
-        attention_mask       = proc["attention_mask"]
+        prompts = []
+        for t in range(T):
+            go = goal_offsets[t] if goal_offsets is not None else None
+            if go is not None and torch.is_tensor(go):
+                go = go.tolist()
+            prompts.append(self._prompt_text(bev_images[t], lang_description, go))
+
+        tokenizer = self.processor.tokenizer
+        prev_side = tokenizer.padding_side
+        tokenizer.padding_side = "right"
+        try:
+            proc = self.processor(
+                text=prompts,
+                images=[[img] for img in bev_images],
+                return_tensors="pt",
+                padding=True,
+            )
+        finally:
+            tokenizer.padding_side = prev_side
+
+        input_ids            = proc["input_ids"].to(device)
+        attention_mask       = proc["attention_mask"].to(device)
+        pixel_values         = proc["pixel_values"].to(device)
+        pixel_attention_mask = proc["pixel_attention_mask"].to(device)
 
         inputs_embeds = self.embed_tokens(input_ids)
         image_embeds  = self.embed_image(pixel_values, pixel_attention_mask)
@@ -287,4 +320,5 @@ class SmolVLM2Encoder(nn.Module):
             use_cache=False,
         )
 
-        return lm_out.last_hidden_state
+        hs = lm_out.last_hidden_state                     # [T, S_max, D]
+        return [hs[t][attention_mask[t].bool()] for t in range(T)]

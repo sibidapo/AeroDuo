@@ -45,6 +45,7 @@ from torchvision.ops import box_convert, nms as torchvision_nms
 from sam2.build_sam import build_sam2
 from sam2.sam2_image_predictor import SAM2ImagePredictor
 from grounding_dino.groundingdino.util.inference import load_model, load_image, predict
+from grounding_dino.groundingdino.util.utils import get_phrases_from_posmap
 
 # Local module
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -143,48 +144,168 @@ def _detect_per_prompt(
     goal_norm = _normalise_category(goal_object)
     prompt_count = max(len(prompt_list), 1)
 
-    for prompt_index, prompt in enumerate(prompt_list):
-        prompt_norm = _normalise_category(prompt)
-        if not prompt_norm:
-            continue
+    # ms_deform_attn CUDA kernel only supports fp32; disable autocast for GDINO
+    device_type = device.split(":")[0] if isinstance(device, str) else device.type
+    # load_model() leaves weights on CPU; predict() used to move them on every
+    # call, but set_image_tensor below now runs first — move explicitly
+    grounding_model = grounding_model.to(device)
+    image_f32 = image_tensor.float().to(device)
 
-        # ms_deform_attn CUDA kernel only supports fp32; disable autocast for GDINO
-        device_type = device.split(":")[0] if isinstance(device, str) else device.type
-        with torch.autocast(device_type=device_type, enabled=False):
-            boxes_cx, confidences, labels = predict(
-                model=grounding_model,
-                image=image_tensor.float(),
-                caption=f"{prompt_norm}.",
-                box_threshold=box_threshold,
-                text_threshold=text_threshold,
-                device=device,
-            )
-        if len(boxes_cx) == 0:
-            continue
+    # The Swin backbone depends only on the image, so run it once and reuse
+    # its multi-scale features for every prompt; each forward unsets the
+    # model's cached copy on exit, so re-install before every call.  poss is
+    # passed as a fresh copy per forward because the extra-feature-level
+    # branch appends to it in place.
+    with torch.no_grad(), torch.autocast(device_type=device_type, enabled=False):
+        grounding_model.set_image_tensor(image_f32[None])
+    features, poss = grounding_model.features, grounding_model.poss
 
-        boxes_px = box_convert(
-            boxes_cx * torch.tensor([image_width, image_height, image_width, image_height], dtype=torch.float32),
-            in_fmt="cxcywh",
-            out_fmt="xyxy",
-        ).numpy()
-        conf_np = confidences.numpy()
+    try:
+        for prompt_index, prompt in enumerate(prompt_list):
+            prompt_norm = _normalise_category(prompt)
+            if not prompt_norm:
+                continue
 
-        is_goal_prompt = goal_norm is not None and prompt_norm == goal_norm
-        priority_bonus = 1.0 if is_goal_prompt else 0.01 * (prompt_count - prompt_index)
+            grounding_model.set_image_features(features, list(poss))
+            with torch.autocast(device_type=device_type, enabled=False):
+                boxes_cx, confidences, labels = predict(
+                    model=grounding_model,
+                    image=image_f32,
+                    caption=f"{prompt_norm}.",
+                    box_threshold=box_threshold,
+                    text_threshold=text_threshold,
+                    device=device,
+                )
+            if len(boxes_cx) == 0:
+                continue
 
-        for bbox, confidence, raw_label in zip(boxes_px.tolist(), conf_np.tolist(), labels):
-            candidates.append({
-                "prompt_index": prompt_index,
-                "prompt": prompt_norm,
-                "category": prompt_norm,
-                "raw_grounding_label": raw_label.strip(),
-                "bbox_xyxy": bbox,
-                "confidence": float(confidence),
-                "nms_score": float(confidence) + priority_bonus,
-                "is_goal": is_goal_prompt,
-            })
+            boxes_px = box_convert(
+                boxes_cx * torch.tensor([image_width, image_height, image_width, image_height], dtype=torch.float32),
+                in_fmt="cxcywh",
+                out_fmt="xyxy",
+            ).numpy()
+            conf_np = confidences.numpy()
+
+            is_goal_prompt = goal_norm is not None and prompt_norm == goal_norm
+            priority_bonus = 1.0 if is_goal_prompt else 0.01 * (prompt_count - prompt_index)
+
+            for bbox, confidence, raw_label in zip(boxes_px.tolist(), conf_np.tolist(), labels):
+                candidates.append({
+                    "prompt_index": prompt_index,
+                    "prompt": prompt_norm,
+                    "category": prompt_norm,
+                    "raw_grounding_label": raw_label.strip(),
+                    "bbox_xyxy": bbox,
+                    "confidence": float(confidence),
+                    "nms_score": float(confidence) + priority_bonus,
+                    "is_goal": is_goal_prompt,
+                })
+    finally:
+        # Guarantee no stale features survive (e.g. if every prompt was
+        # skipped, no forward ran and the cache would leak into the next
+        # frame's detection).
+        grounding_model.unset_image_tensor()
 
     return candidates
+
+
+def _detect_window_per_prompt(
+    image_tensors: list,
+    frame_sizes: list,
+    prompt_list: list[str],
+    goal_object: Optional[str],
+    grounding_model,
+    device: str,
+    box_threshold: float,
+    text_threshold: float,
+) -> list[list[dict]]:
+    """
+    Batched variant of _detect_per_prompt for a window of T same-sized frames.
+
+    The Swin backbone runs once over the stacked window; each prompt then runs
+    one text/fusion/decoder forward batched over all T frames (the per-prompt
+    structure that keeps categories tied to extracted nouns is unchanged).
+    Post-processing mirrors groundingdino.util.inference.predict per frame.
+
+    Parameters
+    ----------
+    image_tensors : T × Tensor [3, H', W'] — GDINO-preprocessed, all same shape
+    frame_sizes   : T × (width, height) — original pixel sizes for box scaling
+
+    Returns
+    -------
+    T × List[dict] — same candidate dicts as _detect_per_prompt, per frame
+    """
+    T = len(image_tensors)
+    candidates_per_frame: list[list[dict]] = [[] for _ in range(T)]
+    goal_norm = _normalise_category(goal_object)
+    prompt_count = max(len(prompt_list), 1)
+
+    # ms_deform_attn CUDA kernel only supports fp32; disable autocast for GDINO
+    device_type = device.split(":")[0] if isinstance(device, str) else device.type
+    # load_model() leaves weights on CPU; move explicitly (predict() is not in
+    # this call path to do it for us)
+    grounding_model = grounding_model.to(device)
+    images = torch.stack([t.float() for t in image_tensors]).to(device)
+    tokenizer = grounding_model.tokenizer
+
+    with torch.no_grad(), torch.autocast(device_type=device_type, enabled=False):
+        grounding_model.set_image_tensor(images)
+    features, poss = grounding_model.features, grounding_model.poss
+
+    try:
+        for prompt_index, prompt in enumerate(prompt_list):
+            prompt_norm = _normalise_category(prompt)
+            if not prompt_norm:
+                continue
+            caption = f"{prompt_norm}."
+
+            grounding_model.set_image_features(features, list(poss))
+            with torch.no_grad(), torch.autocast(device_type=device_type, enabled=False):
+                outputs = grounding_model(images, captions=[caption] * T)
+
+            pred_logits = outputs["pred_logits"].cpu().sigmoid()   # [T, nq, 256]
+            pred_boxes  = outputs["pred_boxes"].cpu()              # [T, nq, 4]
+            tokenized   = tokenizer(caption)
+
+            is_goal_prompt = goal_norm is not None and prompt_norm == goal_norm
+            priority_bonus = 1.0 if is_goal_prompt else 0.01 * (prompt_count - prompt_index)
+
+            for t in range(T):
+                logits_t = pred_logits[t]
+                sel = logits_t.max(dim=1)[0] > box_threshold
+                if not bool(sel.any()):
+                    continue
+                logits_sel = logits_t[sel]
+                boxes_sel  = pred_boxes[t][sel]
+
+                image_width, image_height = frame_sizes[t]
+                boxes_px = box_convert(
+                    boxes_sel * torch.tensor([image_width, image_height, image_width, image_height], dtype=torch.float32),
+                    in_fmt="cxcywh",
+                    out_fmt="xyxy",
+                ).numpy()
+                conf_np = logits_sel.max(dim=1)[0].numpy()
+                labels = [
+                    get_phrases_from_posmap(logit > text_threshold, tokenized, tokenizer).replace(".", "")
+                    for logit in logits_sel
+                ]
+
+                for bbox, confidence, raw_label in zip(boxes_px.tolist(), conf_np.tolist(), labels):
+                    candidates_per_frame[t].append({
+                        "prompt_index": prompt_index,
+                        "prompt": prompt_norm,
+                        "category": prompt_norm,
+                        "raw_grounding_label": raw_label.strip(),
+                        "bbox_xyxy": bbox,
+                        "confidence": float(confidence),
+                        "nms_score": float(confidence) + priority_bonus,
+                        "is_goal": is_goal_prompt,
+                    })
+    finally:
+        grounding_model.unset_image_tensor()
+
+    return candidates_per_frame
 
 
 # ─── Core segmentation function ───────────────────────────────────────────────

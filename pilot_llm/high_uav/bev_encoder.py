@@ -6,7 +6,10 @@ raw dataset outputs (BEV PIL images + instruction) and nothing SAM2/GDINO-specif
 
 Batchification strategy
 -----------------------
-GroundingDINO has no multi-image batch API — detection runs per-frame sequentially.
+GroundingDINO: the Swin backbone (image-only) runs ONCE over the stacked T-frame
+window; each text prompt then runs a single BERT + fusion/decoder forward
+batched over all T frames (per-prompt structure preserved so categories stay
+tied to the extracted nouns).
 
 SAM2 is batched within the T-frame window:
     set_image_batch([img_0, ..., img_{T-1}])
@@ -58,6 +61,7 @@ try:
         TEXT_THRESHOLD,
         NMS_IOU_THRESH,
         _detect_per_prompt,
+        _detect_window_per_prompt,
     )
     from .noun_extractor import parse_instruction, build_prompt_list
 except ImportError:
@@ -68,6 +72,7 @@ except ImportError:
         TEXT_THRESHOLD,
         NMS_IOU_THRESH,
         _detect_per_prompt,
+        _detect_window_per_prompt,
     )
     from noun_extractor import parse_instruction, build_prompt_list
 
@@ -152,20 +157,32 @@ def _detect_frame(
         img_t, w, h, prompt_list, goal_object,
         grounding_model, device, box_threshold, text_threshold,
     )
+    boxes_kept, kept = _nms_and_sort(candidates, nms_iou)
+    return img_np, boxes_kept, kept
+
+
+def _nms_and_sort(
+    candidates: List[dict],
+    nms_iou: float = NMS_IOU_THRESH,
+) -> Tuple[np.ndarray, List[dict]]:
+    """
+    NMS + canonical ordering (goal first, then prompt index, then confidence
+    descending) for one frame's detection candidates.
+
+    Returns (boxes_kept [N, 4] float32 xyxy, kept detection dicts).
+    """
     if not candidates:
-        return img_np, np.zeros((0, 4), dtype=np.float32), []
+        return np.zeros((0, 4), dtype=np.float32), []
 
     boxes   = np.asarray([c["bbox_xyxy"] for c in candidates], dtype=np.float32)
     scores  = np.asarray([c["nms_score"]  for c in candidates], dtype=np.float32)
     keep    = _apply_nms(boxes, scores, nms_iou)
     kept    = [candidates[i] for i in keep.tolist()]
 
-    # Goal first, then by prompt index, then confidence descending
     kept.sort(key=lambda c: (-int(c["is_goal"]), c["prompt_index"], -c["confidence"]))
 
-    # Re-extract boxes in the sorted order
     boxes_kept = np.asarray([c["bbox_xyxy"] for c in kept], dtype=np.float32)
-    return img_np, boxes_kept, kept
+    return boxes_kept, kept
 
 
 # ── BEVEncoder ────────────────────────────────────────────────────────────────
@@ -235,21 +252,46 @@ class BEVEncoder:
         contextual_nouns = [n for n in contextual_nouns if n]
         prompt_list      = build_prompt_list(goal_object, contextual_nouns)
 
-        # ── 2. GDINO detection: per-frame (no batch API) ───────────────────────
+        # ── 2. GDINO detection: Swin backbone once for the whole window, then
+        #      one text/fusion/decoder forward per prompt batched over T ───────
         raw_images:      List[np.ndarray]       = []   # uint8 [H, W, 3] for SAM2
         boxes_per_frame: List[np.ndarray]       = []   # float32 [N, 4] xyxy
         detections_list: List[List[dict]]       = []
         img_hw:          List[Tuple[int, int]]  = []
+        img_tensors:     List[torch.Tensor]     = []
 
         for pil_img in bev_images:
-            img_np, boxes_px, dets = _detect_frame(
-                pil_img, prompt_list, goal_object,
-                self.grounding_model, device_str,
-            )
+            img_np, img_t = _pil_to_gdino(pil_img)
             raw_images.append(img_np)
-            boxes_per_frame.append(boxes_px)
-            detections_list.append(dets)
             img_hw.append(img_np.shape[:2])   # (H, W)
+            img_tensors.append(img_t)
+
+        if prompt_list and len({t.shape for t in img_tensors}) == 1:
+            cands_per_frame = _detect_window_per_prompt(
+                img_tensors,
+                [(hw[1], hw[0]) for hw in img_hw],       # (W, H) per frame
+                prompt_list, goal_object,
+                self.grounding_model, device_str,
+                BOX_THRESHOLD, TEXT_THRESHOLD,
+            )
+            for cands in cands_per_frame:
+                boxes_px, dets = _nms_and_sort(cands, NMS_IOU_THRESH)
+                boxes_per_frame.append(boxes_px)
+                detections_list.append(dets)
+        elif prompt_list:
+            # Mixed frame sizes within a window (not expected for BEV data):
+            # fall back to the per-frame path
+            for pil_img in bev_images:
+                _, boxes_px, dets = _detect_frame(
+                    pil_img, prompt_list, goal_object,
+                    self.grounding_model, device_str,
+                )
+                boxes_per_frame.append(boxes_px)
+                detections_list.append(dets)
+        else:
+            for _ in bev_images:
+                boxes_per_frame.append(np.zeros((0, 4), dtype=np.float32))
+                detections_list.append([])
 
         # ── 3. SAM2 batch image encoding — ONE Hiera forward for all T frames ──
         # set_image_batch populates:

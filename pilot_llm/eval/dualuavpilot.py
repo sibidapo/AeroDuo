@@ -114,6 +114,10 @@ class DualUAVPilot:
         policy = AeroDuoPolicy(cfg, sam2_predictor, grounding_model)
 
         sd = torch.load(ckpt_path, map_location="cpu")
+        # train.py checkpoints wrap the weights as {"model": ..., "optimizer": ...};
+        # load_trainable_state_dict filters on module prefixes and silently loads
+        # nothing if handed the wrapped dict, so unwrap first.
+        sd = sd["model"] if "model" in sd else sd
         policy.load_trainable_state_dict(sd, strict=True)
 
         policy.to(cfg_device)
@@ -131,6 +135,13 @@ class DualUAVPilot:
         policy = LowUAVPolicy(cfg, high_uav_policy=stage1_policy)
 
         sd = torch.load(ckpt_path, map_location="cpu")
+        # Same wrapped-checkpoint format as Stage 1 (low_uav/train.py _save_checkpoint).
+        sd = sd["model"] if "model" in sd else sd
+        if not any(k.startswith("action_head.") for k in sd):
+            raise KeyError(
+                f"Stage 2 checkpoint {ckpt_path} has no 'action_head.*' keys — "
+                "load_trainable_state_dict would silently load nothing."
+            )
         policy.load_trainable_state_dict(sd, strict=True)
 
         policy.action_head.to(device=device, dtype=torch.bfloat16)

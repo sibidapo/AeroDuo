@@ -336,7 +336,7 @@ class AeroduoDataset(Dataset):
             bev_dir = ep_dir / "bevcamera"
             bev_frame_paths = sorted(
                 p for p in bev_dir.iterdir()
-                if p.is_file() and p.suffix.lower() in _IMAGE_SUFFIXES
+                if p.suffix.lower() in _IMAGE_SUFFIXES
             )
 
             # Sanity: trajectory length must match bevcamera frame count
@@ -351,7 +351,7 @@ class AeroduoDataset(Dataset):
             front_dir = ep_dir / "frontcamera"
             front_frame_paths = sorted(
                 p for p in front_dir.iterdir()
-                if p.is_file() and p.suffix.lower() in _IMAGE_SUFFIXES
+                if p.suffix.lower() in _IMAGE_SUFFIXES
             )
 
             if len(front_frame_paths) != len(low_poses):

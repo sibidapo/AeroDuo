@@ -255,7 +255,7 @@ class AirVLNSimulatorClientTool:
                 raise Exception('打开场景失败')
             assert len(result[1]) == 2, '打开场景失败'
             print('waiting for airsim connection...')
-            time.sleep(3 * len(self.machines_info[index]['open_scenes']) + 35)
+            time.sleep(3 * len(self.machines_info[index]['open_scenes']) + 300)
             ip = result[1][0]
             if type(ip) is not str:
                 ip = ip.decode('utf-8')
@@ -287,7 +287,7 @@ class AirVLNSimulatorClientTool:
                     continue
                 confirmed = False
                 count = 0
-                while not confirmed and count < 30:
+                while not confirmed and count < 300:
                     try:
                         client.confirmConnection()
                         confirmed = True

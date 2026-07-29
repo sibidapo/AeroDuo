@@ -16,16 +16,17 @@ Input from dataset / training loop
     low_uav_traj_target   [H, 4]  (None at inference)
 
 BEVEncoder  (frozen, not an nn.Module)
-    GroundingDINO detect   — per-frame, text-conditioned
+    GroundingDINO detect   — backbone once per window, per-prompt batched over T
     SAM2 set_image_batch   — ONE Hiera forward for all T frames
     SAM2 predict           — per-frame mask decode (cheap)
   → image_embeds [T, 256, 64, 64]   detached
   → masks_arrays  List[ndarray [N,H,W]]
   → detections_list List[List[dict]]
 
-SmolVLM2Encoder  (frozen, nn.Module, @torch.no_grad inside forward)
-    VLM(BEV image, instruction)   — image + text only, no pose tokens
-  → hidden_states [T, S, 2048]
+SmolVLM2Encoder  (frozen, nn.Module)
+    VLM(BEV images, instruction)  — image + text only, no pose tokens;
+                                    one forward batched over the T-frame window
+  → hidden_states T × [S_t, 2048]  (ragged: goal cue varies per frame)
 
 PositionVertexBuilder  (trainable — PoseFeatureMerger + PerceiverIO + output_query)
     hidden_states cross-attend over projected high/low UAV pose tokens,
@@ -68,6 +69,7 @@ Trainable:
 
 from __future__ import annotations
 
+import time
 from typing import Dict, List, Optional
 
 import numpy as np
@@ -196,9 +198,10 @@ class AeroDuoPolicy(nn.Module):
 
         Pipeline
         --------
-        Frozen (loop over B, and over T for the VLM):
+        Frozen (loop over B):
           1. BEVEncoder     → image_embeds [T,256,64,64], masks, detections  (per episode)
-          2. SmolVLM2       → hidden_states [T, S, 2048]  (image + text only, per frame)
+          2. SmolVLM2       → hidden_states T × [S_t, 2048]  (image + text only,
+                              one batched forward per episode)
         Trainable (batched over B):
           3. PoseFeatureMerger + PerceiverIO
                             → place_nodes  [B, T, D_g]  (hidden states cross-attend
@@ -234,23 +237,18 @@ class AeroDuoPolicy(nn.Module):
             all_masks.append(masks_b)
             all_detections.append(dets_b)
 
-            # SmolVLM2: per-frame within this episode
+            # SmolVLM2: one batched forward for all T frames of this episode.
+            # Returned sequences are ragged: the goal-cue text
+            # (fuzzy_goal_phrase) tokenizes to a different length depending on
+            # distance/bearing, so frames within a window (and across the
+            # batch) vary in S.
             go_b = goal_offsets[b] if goal_offsets is not None else None
-            hs_b: List[torch.Tensor] = []
-            for t in range(T):
-                go_bt = go_b[t] if go_b is not None else None
-                if go_bt is not None and torch.is_tensor(go_bt):
-                    go_bt = go_bt.tolist()
-                h = self.vlm_encoder(
-                    bev_image=bev_images[b][t],
-                    lang_description=instruction[b],
-                    device=device,
-                    goal_offset=go_bt,
-                )                              # [1, S, 2048]
-                hs_b.append(h.squeeze(0))      # [S_bt, 2048] — S varies per
-                # frame: the goal-cue text (fuzzy_goal_phrase) tokenizes to a
-                # different length depending on distance/bearing, so frames
-                # within a window (and across the batch) are ragged.
+            hs_b = self.vlm_encoder(
+                bev_images=bev_images[b],
+                lang_description=instruction[b],
+                device=device,
+                goal_offsets=go_b,
+            )                                  # T × [S_bt, 2048]
             all_hidden.append(hs_b)
 
         # ── Step 3: pose fusion + PerceiverIO [B, T, S, 2048] → [B, T, D_g] ──

@@ -20,7 +20,7 @@ AIRSIM_SETTINGS_TEMPLATE = {
     "SettingsVersion": 1.2,
     "SimMode": "Multirotor",
     "ClockSpeed": 10,
-    "ViewMode": "NoDisplay",
+    "ViewMode": "NoDisplay", #"NoDisplay" "SpringArmChase"
     "PhysiceEngineName": "ExternalPhysicsEngine",
     "Recording": {
         "RecordInterval": 1,
@@ -207,7 +207,7 @@ AIRSIM_SETTINGS_TEMPLATE_2UAV = {
     "SettingsVersion": 1.2,
     "SimMode": "Multirotor",
     "ClockSpeed": 10,
-    "ViewMode": "NoDisplay",
+    "ViewMode": "NoDisplay", #"NoDisplay" "SpringArmChase"
     "PhysiceEngineName": "ExternalPhysicsEngine",
     "Recording": {
         "RecordInterval": 1,
@@ -412,11 +412,11 @@ known_env_dict = {
     },
     "NewYorkCity": {
         'bash_name': 'NewYorkCity',
-        'exec_path': '/nfs/airport/airdrone/envs',
+        'exec_path': '/storage/project/r-cj124-0/sibidapo3/8750/aeroduo_ws/ENVs/closeloop_envs/closeloop_envs',
     },
     "ModularPark": {
         'bash_name': 'ModularPark',
-        'exec_path': '/nfs/airport/airdrone/envs',
+        'exec_path': '/storage/project/r-cj124-0/sibidapo3/8750/aeroduo_ws/ENVs/closeloop_envs/closeloop_envs',
     },
     "ModularEuropean": {
         'bash_name': 'ModularEuropean',
@@ -787,7 +787,7 @@ class EventHandler(object):
                 p_s.append(None)
                 continue
             else:
-                subprocess_execute = "vglrun bash {} -RenderOffscreen -NoSound -NoVSync -GraphicsAdapter={} -settings={} ".format(
+                subprocess_execute = "bash {} -RenderOffscreen -NoSound -NoVSync -GraphicsAdapter={} -settings={} ".format(
                     choose_env_exe_paths[index],
                     gpu_id,
                     str(CWD_DIR / 'airsim_plugin/settings' /
@@ -831,7 +831,7 @@ class EventHandler(object):
         res = glob.glob((str(SEARCH_ENVs_PATH / (scene_id + '.sh'))))
         env_path = res[0]
 
-        subprocess_execute = "vglrun bash {} -RenderOffscreen -NoSound -NoVSync -GraphicsAdapter={} -settings={} ".format(
+        subprocess_execute = "bash {} -RenderOffscreen -NoSound -NoVSync -GraphicsAdapter={} -settings={} ".format(
             env_path,
             gpu_id,
             str(CWD_DIR / 'airsim_plugin/settings' / str(port) /
