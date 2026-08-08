@@ -478,8 +478,8 @@ def create_drones(drone_num_per_env=1,
         airsim_settings = copy.deepcopy(AIRSIM_SETTINGS_TEMPLATE)
     elif NUM_UAV == 2:
         airsim_settings = copy.deepcopy(AIRSIM_SETTINGS_TEMPLATE_2UAV)
-    airsim_settings = generate_distance_sensor_setting(airsim_settings)
-    airsim_settings = generate_camera_setting(airsim_settings)
+    # airsim_settings = generate_distance_sensor_setting(airsim_settings)
+    # airsim_settings = generate_camera_setting(airsim_settings)
     return airsim_settings
 
 
@@ -787,7 +787,7 @@ class EventHandler(object):
                 p_s.append(None)
                 continue
             else:
-                subprocess_execute = "bash {} -RenderOffscreen -NoSound -NoVSync -GraphicsAdapter={} -settings={} ".format(
+                subprocess_execute = "vglrun bash {} -RenderOffscreen -NoSound -NoVSync -GraphicsAdapter={} -settings={} ".format(
                     choose_env_exe_paths[index],
                     gpu_id,
                     str(CWD_DIR / 'airsim_plugin/settings' /
@@ -831,7 +831,7 @@ class EventHandler(object):
         res = glob.glob((str(SEARCH_ENVs_PATH / (scene_id + '.sh'))))
         env_path = res[0]
 
-        subprocess_execute = "bash {} -RenderOffscreen -NoSound -NoVSync -GraphicsAdapter={} -settings={} ".format(
+        subprocess_execute = "vglrun bash {} -RenderOffscreen -NoSound -NoVSync -GraphicsAdapter={} -settings={} ".format(
             env_path,
             gpu_id,
             str(CWD_DIR / 'airsim_plugin/settings' / str(port) /

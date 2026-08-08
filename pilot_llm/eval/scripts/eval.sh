@@ -19,11 +19,11 @@ python -u pilot_llm/eval/eval.py \
     --run_type eval \
     --batchSize 1 \
     --maxWaypoints 50 \
-    --steps_per_plan 2 \
+    --steps_per_plan 8 \
     --gpu_id 0 \
     --device 0 \
-    --simulator_tool_port 50000 \
+    --simulator_tool_port 30000 \
     --no_zgraph \
-    --stage2_ckpt ./pilot_llm/low_uav/checkpoint/exp2/main1/final/trainable_state.pt \
-    --eval_save_path ./output_testrun \
-    --dataset_path ./data/test_unseen_small.json
+    --stage2_ckpt /storage/project/r-cj124-0/sibidapo3/8750/aeroduo_ws/aeroduo/pilot_llm/low_uav/checkpoint/exp2/main1/checkpoint-40000/trainable_state.pt \
+    --eval_save_path /storage/project/r-cj124-0/sibidapo3/8750/aeroduo_ws/aeroduo/output_40000_8steps_NYC_3 \
+    --dataset_path ./data/test_unseen_small_nyc.json

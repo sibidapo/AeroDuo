@@ -163,6 +163,7 @@ class AirVLNENV:
 
         self.drone2_pos_queue = deque(maxlen=10)
         self.drone2_collision = False
+        self._drone2_pending_move = None
 
     @staticmethod
     def load_drone2_traj(traj_path):
@@ -633,12 +634,18 @@ class AirVLNENV:
         if not self.drone2_collision:
             airsim_client.moveByVelocityAsync(0, 0, 0, duration=0.5,
                                               vehicle_name=vehicle_name).join()
+            if self._drone2_pending_move is not None:
+                self._drone2_pending_move.join()
+                self._drone2_pending_move = None
         airsim_client.simPause(True)
         return blocked
 
     def move_drone2(self, goal, airsim_client, vehicle_name="Drone_2",
                     duration=1.0):
-        
+        if self._drone2_pending_move is not None:
+            self._drone2_pending_move.join()
+            self._drone2_pending_move = None
+
         new_state = airsim_client.getMultirotorState(
             vehicle_name=vehicle_name).kinematics_estimated
 
@@ -661,7 +668,7 @@ class AirVLNENV:
         # velocity control; anything inside 3 m counts as arrived so it hovers
         # instead of tripping the stuck detector below.
         if dist2 < 3.0:
-            airsim_client.hoverAsync(vehicle_name=vehicle_name)
+            self._drone2_pending_move = airsim_client.hoverAsync(vehicle_name=vehicle_name)
             return pos
 
         if len(self.drone2_pos_queue) == self.drone2_pos_queue.maxlen:
@@ -676,7 +683,7 @@ class AirVLNENV:
         cmd_vel = direction / dist2 * 5.0
 
         airsim_client.simPause(False)
-        airsim_client.moveByVelocityZAsync(
+        self._drone2_pending_move = airsim_client.moveByVelocityZAsync(
             vx=float(cmd_vel[0]),
             vy=float(cmd_vel[1]),
             z=height,

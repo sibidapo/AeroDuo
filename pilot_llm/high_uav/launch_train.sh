@@ -8,8 +8,8 @@ cd "$(dirname "${BASH_SOURCE[0]}")"
 
 TRAIN_DATA="/storage/project/r-cj124-0/sibidapo3/8750/aeroduo_ws/aeroduo/data/train_data_new.json"
 OUTPUT_DIR="checkpoint/exp1/main1"
-#RESUME="checkpoint/exp1/main1/checkpoint-2000/trainable_state.pt"
-RESUME=""
+RESUME="checkpoint/exp1/main1/checkpoint-39000/trainable_state.pt"
+#RESUME=""
 
 mkdir -p "$OUTPUT_DIR"
 

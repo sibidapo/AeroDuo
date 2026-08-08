@@ -707,6 +707,10 @@ class AirVLNSimulatorClientTool:
             # renderer produces a frame before simGetImages is called.
             airsim_client.simContinueForFrames(1)
             airsim_client.simPause(True)
+            # Depth (pixels_as_float=True) readback measured at ~50s per call
+            # on this AirSim build/driver combo, vs ~0.07s for Scene alone;
+            # nothing downstream reads obs['depth']/obs['bev_depth'], so only
+            # Scene is requested.
             ImageRequest = []
             for camera_name in cameras:
                 ImageRequest.append(
@@ -714,38 +718,22 @@ class AirVLNSimulatorClientTool:
                                         airsim.ImageType.Scene,
                                         pixels_as_float=False,
                                         compress=False))
-                ImageRequest.append(
-                    airsim.ImageRequest(camera_name,
-                                        airsim.ImageType.DepthPerspective,
-                                        pixels_as_float=True,
-                                        compress=False))
             image_datas = airsim_client.simGetImages(vehicle_name='Drone_1',
                                                      requests=ImageRequest)
             images, depth_images = [], []
             for idx, camera_name in enumerate(cameras):
-                rgb_resp = image_datas[2 * idx]
+                rgb_resp = image_datas[idx]
                 image = np.frombuffer(rgb_resp.image_data_uint8,
                                       dtype=np.uint8).reshape(
                                           rgb_resp.height, rgb_resp.width, 3)
-                depth_resp = image_datas[2 * idx + 1]
-                depth_img_in_meters = airsim.list_to_2d_float_array(
-                    depth_resp.image_data_float, depth_resp.width,
-                    depth_resp.height)
-                depth_image = (np.clip(depth_img_in_meters, 0, 100) / 100 *
-                               255).astype(np.uint8)
                 images.append(image)
-                depth_images.append(depth_image)
+                depth_images.append(None)
             if use_bev:
                 bev_request = []
                 bev_request.append(
                     airsim.ImageRequest('BEVCamera',
                                         airsim.ImageType.Scene,
                                         pixels_as_float=False,
-                                        compress=False))
-                bev_request.append(
-                    airsim.ImageRequest('BEVCamera',
-                                        airsim.ImageType.DepthPlanar,
-                                        pixels_as_float=True,
                                         compress=False))
                 bev_datas = airsim_client.simGetImages(vehicle_name='Drone_2',
                                                        requests=bev_request)
@@ -754,11 +742,7 @@ class AirVLNSimulatorClientTool:
                                           dtype=np.uint8).reshape(
                                               bev_image.height,
                                               bev_image.width, 3)
-                bev_depth = bev_datas[1]
-                bev_depth_in_meters = airsim.list_to_2d_float_array(
-                    bev_depth.image_data_float, bev_depth.width,
-                    bev_depth.height)
-                bev_depth = bev_depth_in_meters.astype(np.uint8)
+                bev_depth = None
             if use_bev:
                 return images, depth_images, bev_image, bev_depth
             return images, depth_images

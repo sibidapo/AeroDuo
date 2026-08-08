@@ -248,7 +248,7 @@ class EvalRollout:
         folder_names = ['bevcamera', 'frontcamera', 'log', 'log2']
         for folder_name in folder_names:
             os.makedirs(os.path.join(root_path, folder_name), exist_ok=True)
-        self.save_images(root_path, i)
+        #self.save_images(root_path, i)
         self.save_logs(root_path, i)
 
     def save_images(self, trajectory_dir, i):

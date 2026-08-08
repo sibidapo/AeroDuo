@@ -32,3 +32,7 @@
 11. Current-pose relative statistics (min, max) is estimated using: ```aeroduo/pilot_llm/data_preprocessing/compute_action_stats.py``` for action horizons of 2, 4, 8 (to be compared during ablation). This is used for normalizing chunked actions in dataset.
 
 12. Note, need to fix eval checkpoints matching with new model params after training. ALso need to fix the goal_offset prompt to match current (relative vs absolute)
+
+13. Fix for eval simulation speed-up: airsim_plugin/AirVLNSimulatorServerTool.py — stopped generating the 36 unused directional cameras + 144 unused distance sensors (dead weight, no measured effect but no downside either).
+vlnce_src/env_uav.py — fixed the dangling-future race in move_drone2/fly_drone1_leg that caused the event loop is already running crash once real CPU parallelism exposed it.
+airsim_plugin/AirVLNSimulatorClientTool.py — dropped the unused depth-image capture, which was the actual ~100s bottleneck.
